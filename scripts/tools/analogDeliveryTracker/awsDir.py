@@ -3,7 +3,8 @@
 Un solo file da copiare in un altro progetto. Fa tre cose:
 
 1. legge una cartella ``.aws`` (nel browser la fa scegliere all'utente con
-   ``pyscript.fs.mount``, altrove la legge da disco);
+   ``pyscript.fs.mount``, o con un file input dove quello è vietato, altrove la
+   legge da disco);
 2. elenca i profili e, per ognuno, le sorgenti di credenziali utilizzabili,
    ordinate per affidabilità e con l'account AWS dichiarato;
 3. restituisce sessioni e client boto3 già configurati.
@@ -337,6 +338,48 @@ def _read_tree(root):
     return files
 
 
+def _is_wanted(rel):
+    """Vero per i percorsi relativi che ``_read_tree`` terrebbe."""
+    if rel in _WANTED_FILES:
+        return True
+    folder, _, name = rel.rpartition("/")
+    return folder in _WANTED_DIRS and name.endswith(".json")
+
+
+def _native_picker_available():
+    """Vero se ``showDirectoryPicker`` è utilizzabile in questo contesto.
+
+    Chromium lo vieta nei sotto-frame la cui origine non è quella del frame
+    top-level, e non esiste un ``allow=`` per autorizzarlo. Leggere
+    ``window.top.location.origin`` fallisce esattamente negli stessi casi.
+    """
+    if not IN_PYODIDE:
+        return False
+    try:
+        from js import window
+
+        if not hasattr(window, "showDirectoryPicker"):
+            return False
+        return window.top.location.origin == window.location.origin
+    except Exception:
+        return False
+
+
+async def _read_input_files(node):
+    """Come ``_read_tree``, ma da un ``<input type=file webkitdirectory>``.
+
+    ``webkitRelativePath`` è ``<cartella scelta>/config`` oppure
+    ``<cartella scelta>/sso/cache/x.json``: il primo segmento va tolto.
+    """
+    files = {}
+    for index in range(node.files.length):
+        item = node.files.item(index)
+        rel = str(item.webkitRelativePath).split("/", 1)[-1]
+        if _is_wanted(rel) and item.size <= MAX_FILE_BYTES:
+            files[rel] = await item.text()
+    return dict(sorted(files.items()))
+
+
 def _parse_ini(text):
     parser = configparser.ConfigParser(strict=False, inline_comment_prefixes=("#", ";"))
     try:
@@ -462,11 +505,18 @@ class AwsDirectory:
 
     @classmethod
     async def pick(cls, mount_point: str = "/aws", *, keep_mounted: bool = False) -> "AwsDirectory":
-        """Apre il selettore di cartelle del browser (PyScript).
+        """Fa scegliere la cartella all'utente (PyScript).
 
         Va chiamata da un gestore di evento: il selettore richiede un gesto
         dell'utente, e il primo ``await`` della catena deve essere il montaggio.
+
+        Dentro un iframe di origine diversa da quella della pagina che lo ospita
+        il selettore nativo è vietato; lo è anche fuori da Chromium, che non lo
+        implementa. In quei casi si ripiega su ``from_input``.
         """
+        if not _native_picker_available():
+            return await cls.from_input()
+
         from pyscript import fs
 
         try:
@@ -486,6 +536,53 @@ class AwsDirectory:
                 "Nella cartella scelta non ci sono config, credentials né file di cache: "
                 "probabilmente non è ~/.aws.")
         return cls(files, origin=f"cartella scelta dall'utente ({mount_point})")
+
+    @classmethod
+    async def from_input(cls) -> "AwsDirectory":
+        """Fa scegliere la cartella con ``<input type=file webkitdirectory>``.
+
+        Un file input non ha il limite del selettore nativo sui sotto-frame di
+        altra origine. Dà solo lettura, ricorsiva, e qui basta: la cartella
+        viene letta una volta sola e mai scritta.
+        """
+        import asyncio
+
+        from js import document
+        from pyodide.ffi import create_proxy
+
+        node = document.createElement("input")
+        node.type = "file"
+        node.multiple = True
+        node.style.display = "none"
+        for name in ("webkitdirectory", "directory"):   # il secondo per i non-Chromium
+            node.setAttribute(name, "")
+        document.body.appendChild(node)
+
+        chosen = asyncio.get_running_loop().create_future()
+
+        def on_close(event):                            # "cancel" se l'utente annulla
+            if not chosen.done():
+                chosen.set_result(None)
+
+        proxy = create_proxy(on_close)
+        node.addEventListener("change", proxy)
+        node.addEventListener("cancel", proxy)
+        try:
+            node.click()
+            await chosen
+            empty = node.files.length == 0
+            files = {} if empty else await _read_input_files(node)
+        finally:
+            proxy.destroy()
+            node.remove()
+
+        if empty:
+            raise AwsDirError("Nessuna cartella scelta.")
+        if not files:
+            raise AwsDirError(
+                "Nella cartella scelta non ci sono config, credentials né file di cache: "
+                "probabilmente non è ~/.aws.")
+        return cls(files, origin="cartella scelta dall'utente (file input)")
 
     @classmethod
     async def open(cls, path: str = "~/.aws", mount_point: str = "/aws") -> "AwsDirectory":

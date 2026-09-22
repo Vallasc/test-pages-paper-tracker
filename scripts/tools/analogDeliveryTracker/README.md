@@ -41,6 +41,11 @@ le voci vengono marcate con un badge «riconsegna coda».
 3. Apri <http://localhost:8000/> e premi **Cartella .aws** per dare al browser
    l'accesso in lettura a `~/.aws`.
 
+   Il selettore di cartelle di Chrome è vietato dentro un iframe la cui origine
+   non è quella della pagina che lo ospita, e fuori da Chromium non esiste: in
+   quei casi il bottone ripiega da solo su un `<input type="file"
+   webkitdirectory>`, che legge la stessa cartella senza quel limite.
+
 4. Scegli il profilo dal menu in alto: la credenziale attiva viene presa
    automaticamente (cache SSO, `credentials`, variabili d'ambiente…) e la pill in
    alto a destra mostra account e region del collegamento. L'ultimo profilo usato
