@@ -245,9 +245,9 @@ ERROR_CAUSES = {
     "STOCK_890_REFINEMENT_MISSING": "Spedizione 890 non perfezionata",
     "STOCK_890_REFINEMENT_ERROR": "Errore nel perfezionamento della spedizione 890",
     "VALUE_AFTER_REFINEMENT": "Evento arrivato dopo la conclusione della spedizione o durante l'attesa dell'OCR",
-    "VALUES_NOT_MATCHING": "Mancano degli allegati rispetto a quelli attesi",
-    "INVALID_VALUES": "Errore nella validazione",
-    "VALUES_NOT_FOUND": "Non sono presenti tutti gli statusCode previsti dalla macchina a stati",
+    "VALUES_NOT_MATCHING": "Mancano dei valori rispetto a quelli attesi",
+    "INVALID_VALUES": "Valori non presenti o non validi",
+    "VALUES_NOT_FOUND": "Non sono presenti tutti i valori previsti dalla macchina a stati",
     "SOURCETYPE_FILETYPE_INCOHERENT": "sourceType e fileType dell'allegato non sono coerenti",
 }
 
