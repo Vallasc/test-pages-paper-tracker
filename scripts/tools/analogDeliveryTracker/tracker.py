@@ -518,6 +518,34 @@ def say(element_id, message, tone="text-slate-500"):
     node.innerText = message
 
 
+def say_error(element_id, message):
+    """Come ``say``, ma coi due gesti che servono dopo un errore.
+
+    Le righe rientrate sono comandi, e escono con un bottone «copia»; in coda
+    «Rileggi la cartella», da premere una volta eseguito il comando.
+    """
+    node = el(element_id)
+    node.className = "mt-3 text-sm text-rose-600"
+    blocks = []
+    for line in message.splitlines():
+        if line.startswith("  ") and line.strip():
+            command = escape(line.strip())
+            blocks.append(
+                '<span class="mt-1 flex flex-wrap items-center gap-2">'
+                f'<code class="rounded bg-rose-50 px-2 py-1 font-mono text-xs '
+                f'text-rose-900">{command}</code>'
+                f'<button type="button" data-copy="{command}" '
+                'class="shrink-0 rounded border border-rose-200 px-2 py-1 text-xs '
+                'text-rose-700 hover:bg-rose-50">copia</button></span>')
+        else:
+            blocks.append(f'<span class="block">{escape(line)}</span>')
+    blocks.append(
+        '<span class="mt-2 block"><button type="button" data-reload '
+        'class="rounded bg-brand px-3 py-1.5 text-xs font-medium text-white '
+        'hover:bg-blue-900">Rileggi la cartella</button></span>')
+    node.innerHTML = "".join(blocks)
+
+
 def read_setting(key):
     """localStorage non è disponibile ovunque (file://, modalità restrittive)."""
     try:
@@ -581,12 +609,15 @@ def connect():
     state["ddb"] = None
     el("btn-search").disabled = True
     try:
-        source = aws.best_source(profile)
+        # senza require_account un profilo a cui non sei loggato ripiegherebbe,
+        # in silenzio, sulle credenziali di un altro account
+        source = aws.best_source(profile, require_account=True)
         region = aws.region_for(profile) or k.DEFAULT_REGION
         state["ddb"] = aws.client("dynamodb", profile, source=source, region=region)
     except awsdir.AwsDirError as exc:
-        set_connection("ko", "Credenziali non valide", str(exc))
-        say("search-msg", str(exc), "text-rose-600")
+        mismatch = isinstance(exc, awsdir.AccountMismatch)
+        set_connection("ko", "Account diverso" if mismatch else "Credenziali non valide", str(exc))
+        say_error("search-msg", str(exc))
         return
 
     remember_profile(profile)
@@ -609,8 +640,12 @@ def fill_profiles():
     names = sorted(aws.profile_names(),
                    key=lambda name: profile_rank(name, last_used, counts))
     select = el("sel-profile")
+    # la classifica ricorda solo i profili che si sono connessi: senza questo,
+    # una rilettura sposterebbe la scelta proprio mentre ne stai sistemando uno
+    current = select.value
+    chosen = current if current in names else names[0]
     select.innerHTML = "".join(
-        f'<option value="{escape(name)}"{" selected" if name == names[0] else ""}>'
+        f'<option value="{escape(name)}"{" selected" if name == chosen else ""}>'
         f'{escape(name)}</option>' for name in names)
     select.disabled = False
     connect()
@@ -631,14 +666,39 @@ def update_hint(event=None):
 # =============================================================================
 # Eventi
 # =============================================================================
-@when("click", "#btn-pick")
-async def on_pick(event):
+async def reload_directory():
+    """Rilegge la cartella e riconnette, senza ricaricare la pagina.
+
+    È il gesto da fare dopo un ``aws sso login``: il selettore non riappare.
+    """
     try:
         state["aws"] = await awsdir.AwsDirectory.pick()
     except Exception as exc:
         set_connection("ko", "Cartella non letta", str(exc))
+        say_error("search-msg", str(exc))
         return
     fill_profiles()
+
+
+@when("click", "#btn-pick")
+async def on_pick(event):
+    await reload_directory()
+
+
+@when("click", "#search-msg")
+async def on_message_click(event):
+    """Delega: i bottoni dell'errore nascono dopo, quindi si ascolta il contenitore."""
+    button = event.target.closest("[data-copy], [data-reload]")
+    if button is None:
+        return
+    if button.hasAttribute("data-reload"):
+        await reload_directory()
+        return
+    try:
+        await window.navigator.clipboard.writeText(button.dataset.copy)
+        button.innerText = "copiato"
+    except Exception:
+        button.innerText = "copia a mano"
 
 
 @when("change", "#sel-profile")

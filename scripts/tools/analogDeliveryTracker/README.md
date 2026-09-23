@@ -26,9 +26,14 @@ le voci vengono marcate con un badge «riconsegna coda».
 1. Fai login sul profilo che ti interessa e popola la cache delle credenziali:
 
    ```bash
-   aws sso login --profile sso_pn-core-dev
-   aws sts get-caller-identity --profile sso_pn-core-dev
+   aws sso login --profile sso_pn-core-dev && aws sts get-caller-identity --profile sso_pn-core-dev
    ```
+
+   Servono entrambi, per ogni profilo che vuoi usare: il login scrive solo il
+   token in `sso/cache`, mentre le credenziali del ruolo finiscono in
+   `cli/cache` quando lanci un comando con quel profilo. Gli stessi due comandi
+   li trovi già uniti sotto ogni errore di credenziali, con un bottone per
+   copiarli.
 
 2. Servi la cartella via HTTP (`file://` non funziona: le chiamate ad AWS
    partono dal browser e da un'origine `null` il CORS le blocca):
@@ -38,7 +43,7 @@ le voci vengono marcate con un badge «riconsegna coda».
    python3 -m http.server 8000
    ```
 
-3. Apri <http://localhost:8000/> e premi **Cartella .aws** per dare al browser
+3. Apri <http://localhost:8000/> e premi **Load .aws** per dare al browser
    l'accesso in lettura a `~/.aws`.
 
    Il selettore di cartelle di Chrome è vietato dentro un iframe la cui origine

@@ -1,38 +1,27 @@
-"""awsdir — credenziali AWS dalla cartella ``.aws``, nel browser e fuori.
+"""awsdir — credenziali AWS dalla cartella ``.aws``, nel browser.
 
-Un solo file da copiare in un altro progetto. Fa tre cose:
+Un solo file da copiare in un altro progetto PyScript. Fa tre cose:
 
-1. legge una cartella ``.aws`` (nel browser la fa scegliere all'utente con
-   ``pyscript.fs.mount``, o con un file input dove quello è vietato, altrove la
-   legge da disco);
+1. fa scegliere all'utente una cartella ``.aws`` e la legge (col selettore
+   nativo, o con un file input dove quello è vietato);
 2. elenca i profili e, per ognuno, le sorgenti di credenziali utilizzabili,
    ordinate per affidabilità e con l'account AWS dichiarato;
 3. restituisce sessioni e client boto3 già configurati.
 
-In Pyodide boto3 non funziona senza due aggiustamenti, che la libreria applica da
-sola alla prima sessione (vedi ``enable_boto3_in_pyodide``).
+In Pyodide boto3 non funziona senza due aggiustamenti, applicati alla prima
+sessione (vedi ``enable_boto3_in_pyodide``).
 
-Uso nel browser (PyScript)::
-
-    import awsdir
-
-    aws = await awsdir.AwsDirectory.pick()      # apre il selettore di cartelle
-    print(aws.profile_names())
-    ddb = aws.client("dynamodb", "sso_pn-core-dev")
-    ddb.list_tables()
-
-Uso normale (CPython)::
+Uso::
 
     import awsdir
 
-    aws = awsdir.AwsDirectory.from_path()       # ~/.aws
-    ddb = aws.client("dynamodb", "sso_pn-core-dev")
+    aws = await awsdir.AwsDirectory.pick()      # da un gestore di evento
+    ddb = aws.client("dynamodb", "sso_pn-core-dev", require_account=True)
 
 Scelta esplicita della sorgente, quando in cache ci sono più account::
 
     for source in aws.sources("sso_pn-core-dev"):
         print(source.describe())
-    ddb = aws.client("dynamodb", "sso_pn-core-dev", source=sources[0])
 """
 
 from __future__ import annotations
@@ -40,8 +29,6 @@ from __future__ import annotations
 import base64
 import configparser
 import json
-import os
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -59,11 +46,7 @@ __all__ = [
     "account_from_access_key",
     "account_from_arn",
     "whoami",
-    "IN_PYODIDE",
 ]
-
-#: vero quando il codice gira in Pyodide (PyScript, JupyterLite, …)
-IN_PYODIDE = sys.platform == "emscripten"
 
 MAX_FILE_BYTES = 2_000_000
 
@@ -207,25 +190,16 @@ def _shim_urllib3():
 
 
 def enable_boto3_in_pyodide(force: bool = False) -> dict:
-    """Rende boto3 utilizzabile in Pyodide. Fuori da Pyodide non fa nulla.
+    """Rende boto3 utilizzabile in Pyodide. Idempotente.
 
-    Chiamata da sola alla prima sessione; è idempotente, si può invocare prima
-    per avere il resoconto di cosa è stato toccato.
-
-    Due interventi:
-
-    * i nomi mancanti in ``urllib3.util.ssl_`` (vedi :func:`_shim_urllib3`);
-    * il transport di botocore, sostituito con XMLHttpRequest sincrona. Si
-      patcha la **classe** ``URLLib3Session`` e non il nome nel modulo, perché
-      ``EndpointCreator.create_endpoint`` la tiene come valore di default di un
-      argomento, valutato all'import: riassegnare l'attributo non avrebbe effetto.
+    Due interventi: i nomi mancanti in ``urllib3.util.ssl_`` (vedi
+    :func:`_shim_urllib3`) e il transport di botocore, sostituito con
+    XMLHttpRequest sincrona. Si patcha la **classe** ``URLLib3Session`` e non il
+    nome nel modulo, perché ``EndpointCreator.create_endpoint`` la tiene come
+    default di un argomento, valutato all'import.
     """
     global _PYODIDE_REPORT
     if _PYODIDE_REPORT is not None and not force:
-        return _PYODIDE_REPORT
-
-    if not IN_PYODIDE:
-        _PYODIDE_REPORT = {"patched": False, "reason": "non siamo in Pyodide"}
         return _PYODIDE_REPORT
 
     added = _shim_urllib3()
@@ -240,18 +214,11 @@ def enable_boto3_in_pyodide(force: bool = False) -> dict:
 
 
 def import_boto3():
-    """Prepara l'ambiente e restituisce il modulo ``boto3``.
+    """Prepara l'ambiente e restituisce ``boto3``.
 
-    Scorciatoia a prova di errore: ``import boto3`` scritto prima dello shim
-    fallisce con ``ImportError: cannot import name 'ssl' from
-    'urllib3.util.ssl_'``, e in cima a un modulo viene eseguito per primo.
-    Con questa funzione l'ordine è garantito::
-
-        import awsdir
-        boto3 = awsdir.import_boto3()
-
-        s3 = boto3.client("s3", region_name="eu-south-1",
-                          aws_access_key_id=..., aws_secret_access_key=...)
+    Serve perché un ``import boto3`` in cima a un modulo viene eseguito prima
+    dello shim e fallisce con ``ImportError: cannot import name 'ssl' from
+    'urllib3.util.ssl_'``.
     """
     enable_boto3_in_pyodide()
     import boto3
@@ -274,10 +241,8 @@ def account_from_arn(arn: str | None) -> str | None:
 def account_from_access_key(access_key_id: str | None) -> str | None:
     """Ricava l'account id dall'access key, che lo contiene codificato.
 
-    Il formato non è documentato da AWS: è un **indizio**, utile per etichettare
-    le sorgenti prima di connettersi quando la cache SSO non porta un ARN.
-    Per una certezza usa :func:`whoami` o :func:`account_from_arn` su una
-    risorsa reale.
+    Il formato non è documentato da AWS: è un **indizio** per etichettare le
+    sorgenti prima di connettersi, quando la cache SSO non porta un ARN.
     """
     if not access_key_id or len(access_key_id) < 12:
         return None
@@ -308,38 +273,171 @@ _WANTED_FILES = ("config", "credentials")
 _WANTED_DIRS = ("cli/cache", "sso/cache")
 
 
-def _read_text(path):
+#: handle della cartella scelta: riferimento vivo, quindi rileggerlo vede i file
+#: aggiornati. Sta anche in IndexedDB, per sopravvivere ai refresh.
+_dir_handle = None
+
+_IDB_NAME = "awsdir"
+_IDB_STORE = "handles"
+_IDB_KEY = "aws-dir"
+
+
+def _js_options(**values):
+    """Un oggetto JS letterale, come lo vogliono le API del File System Access."""
+    import js
+    from pyodide.ffi import to_js
+
+    return to_js(values, dict_converter=js.Object.fromEntries)
+
+
+async def _await_request(request):
+    """Attende un ``IDBRequest``: IndexedDB parla con eventi, non con promesse."""
+    import asyncio
+    from pyodide.ffi import create_proxy
+
+    done = asyncio.get_running_loop().create_future()
+
+    def settle(event):
+        if not done.done():
+            if event.type == "success":
+                done.set_result(request.result)
+            else:
+                done.set_exception(AwsDirError(f"IndexedDB: {event.type}"))
+
+    proxy = create_proxy(settle)
+    request.addEventListener("success", proxy)
+    request.addEventListener("error", proxy)
     try:
-        if os.path.getsize(path) > MAX_FILE_BYTES:
-            return None
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return handle.read()
-    except OSError:
+        return await done
+    finally:
+        proxy.destroy()
+
+
+async def _idb_database():
+    """Il database degli handle, creando l'object store alla prima apertura.
+
+    Restituisce il database e non lo store: fra ``transaction()`` e la richiesta
+    non ci deve stare un ``await``, o la transazione si chiude prima.
+    """
+    import js
+    from pyodide.ffi import create_proxy
+
+    request = js.indexedDB.open(_IDB_NAME, 1)
+
+    def upgrade(event):
+        database = event.target.result
+        if not database.objectStoreNames.contains(_IDB_STORE):
+            database.createObjectStore(_IDB_STORE)
+
+    proxy = create_proxy(upgrade)
+    request.addEventListener("upgradeneeded", proxy)
+    try:
+        database = await _await_request(request)
+    finally:
+        proxy.destroy()
+    return database
+
+
+async def _remembered_handle():
+    """L'handle lasciato dalla visita precedente, o ``None``."""
+    try:
+        database = await _idb_database()
+        store = database.transaction(_IDB_STORE, "readonly").objectStore(_IDB_STORE)
+        return await _await_request(store.get(_IDB_KEY)) or None
+    except Exception:
         return None
 
 
-def _read_tree(root):
-    """Legge solo ciò che serve: config, credentials e le due cache."""
+async def _remember_handle(handle):
+    """Ricorda l'handle per il prossimo refresh; con ``None`` lo dimentica."""
+    try:
+        database = await _idb_database()
+        store = database.transaction(_IDB_STORE, "readwrite").objectStore(_IDB_STORE)
+        request = store.delete(_IDB_KEY) if handle is None else store.put(handle, _IDB_KEY)
+        await _await_request(request)
+    except Exception:
+        pass                                # è una comodità: se salta, pazienza
+
+
+async def _readable(handle, *, ask=False):
+    """Vero se l'handle è ancora leggibile.
+
+    Dopo un refresh il permesso può essere tornato «prompt»: con ``ask`` lo si
+    richiede, e all'utente tocca un clic invece di ricercare la cartella.
+    """
+    try:
+        state = await handle.queryPermission(_js_options(mode="read"))
+        if state != "granted" and ask:
+            state = await handle.requestPermission(_js_options(mode="read"))
+        return state == "granted"
+    except Exception:
+        return False
+
+
+async def _show_directory_picker():
+    """Apre il selettore nativo. Va chiamato da un gesto dell'utente.
+
+    Niente ``startIn``: ammette solo desktop/documents/downloads/music/pictures/
+    videos, e un valore fuori lista fa fallire la chiamata in validazione. Ci
+    pensa ``id``, che riapre sull'ultima cartella scelta.
+    """
+    import js
+
+    try:
+        return await js.showDirectoryPicker(_js_options(id="awsdir", mode="read"))
+    except Exception as exc:
+        if getattr(exc, "name", "") == "AbortError":
+            raise AwsDirError("Nessuna cartella scelta.") from None
+        raise
+
+
+async def _child(parent, name, *, directory=False):
+    """Il figlio ``name``, o ``None`` se non c'è (o se non è leggibile)."""
+    try:
+        if directory:
+            return await parent.getDirectoryHandle(name)
+        return await parent.getFileHandle(name)
+    except Exception:
+        return None
+
+
+async def _handle_text(handle):
+    item = await handle.getFile()
+    return None if item.size > MAX_FILE_BYTES else await item.text()
+
+
+async def _read_handle_tree(root):
+    """Legge config, credentials e le due cache da un ``FileSystemDirectoryHandle``.
+
+    Ogni lettura passa dall'handle, quindi arriva sul disco: ripremere il
+    bottone dopo un ``aws sso login`` rivede davvero i file nuovi.
+    """
     files = {}
     for name in _WANTED_FILES:
-        text = _read_text(os.path.join(root, name))
-        if text is not None:
-            files[name] = text
-    for sub in _WANTED_DIRS:
-        folder = os.path.join(root, *sub.split("/"))
-        if not os.path.isdir(folder):
-            continue
-        for name in sorted(os.listdir(folder)):
-            if not name.endswith(".json"):
-                continue
-            text = _read_text(os.path.join(folder, name))
+        handle = await _child(root, name)
+        if handle is not None:
+            text = await _handle_text(handle)
             if text is not None:
-                files[f"{sub}/{name}"] = text
-    return files
+                files[name] = text
+    for sub in _WANTED_DIRS:
+        folder = root
+        for part in sub.split("/"):
+            folder = await _child(folder, part, directory=True)
+            if folder is None:
+                break
+        if folder is None:
+            continue
+        async for handle in folder.values():
+            if handle.kind != "file" or not handle.name.endswith(".json"):
+                continue
+            text = await _handle_text(handle)
+            if text is not None:
+                files[f"{sub}/{handle.name}"] = text
+    return dict(sorted(files.items()))
 
 
 def _is_wanted(rel):
-    """Vero per i percorsi relativi che ``_read_tree`` terrebbe."""
+    """Vero per i percorsi relativi che interessano dentro ``.aws``."""
     if rel in _WANTED_FILES:
         return True
     folder, _, name = rel.rpartition("/")
@@ -353,8 +451,6 @@ def _native_picker_available():
     top-level, e non esiste un ``allow=`` per autorizzarlo. Leggere
     ``window.top.location.origin`` fallisce esattamente negli stessi casi.
     """
-    if not IN_PYODIDE:
-        return False
     try:
         from js import window
 
@@ -366,10 +462,9 @@ def _native_picker_available():
 
 
 async def _read_input_files(node):
-    """Come ``_read_tree``, ma da un ``<input type=file webkitdirectory>``.
+    """Come :func:`_read_handle_tree`, ma da un ``<input webkitdirectory>``.
 
-    ``webkitRelativePath`` è ``<cartella scelta>/config`` oppure
-    ``<cartella scelta>/sso/cache/x.json``: il primo segmento va tolto.
+    ``webkitRelativePath`` comincia col nome della cartella scelta: va tolto.
     """
     files = {}
     for index in range(node.files.length):
@@ -473,11 +568,10 @@ class CredentialSource:
 # La cartella .aws
 # =============================================================================
 class AwsDirectory:
-    """Una cartella ``.aws`` già letta in memoria.
+    """Una cartella ``.aws`` letta in memoria.
 
-    I file vengono letti una volta sola: nel browser la cartella viene smontata
-    subito dopo, quindi l'oggetto resta utilizzabile senza riaprire il selettore.
-    Per rileggere (per esempio dopo un ``aws sso login``) costruiscine uno nuovo.
+    È un'istantanea: per rileggere, dopo un ``aws sso login``, richiama
+    :meth:`pick`, che non riaprirà il selettore.
     """
 
     def __init__(self, files, origin: str = ""):
@@ -493,57 +587,52 @@ class AwsDirectory:
         return cls(files, origin=origin)
 
     @classmethod
-    def from_path(cls, path: str = "~/.aws") -> "AwsDirectory":
-        """Legge la cartella da disco (CPython)."""
-        root = os.path.expanduser(path)
-        if not os.path.isdir(root):
-            raise AwsDirError(f"{root} non esiste o non è una cartella.")
-        files = _read_tree(root)
-        if not files:
-            raise AwsDirError(f"In {root} non ci sono config, credentials né file di cache.")
-        return cls(files, origin=root)
+    async def pick(cls) -> "AwsDirectory":
+        """Fa scegliere la cartella all'utente e la legge.
 
-    @classmethod
-    async def pick(cls, mount_point: str = "/aws", *, keep_mounted: bool = False) -> "AwsDirectory":
-        """Fa scegliere la cartella all'utente (PyScript).
+        Va chiamata da un gestore di evento: sia il selettore sia la richiesta
+        di permesso su un handle ricordato vogliono un gesto dell'utente. Dalla
+        seconda volta non riappare nulla, ma i file sono riletti dal disco.
 
-        Va chiamata da un gestore di evento: il selettore richiede un gesto
-        dell'utente, e il primo ``await`` della catena deve essere il montaggio.
+        Non passa da ``pyscript.fs.mount``, che copia la cartella in un
+        filesystem Emscripten e alle riletture restituiva la copia vecchia.
 
-        Dentro un iframe di origine diversa da quella della pagina che lo ospita
-        il selettore nativo è vietato; lo è anche fuori da Chromium, che non lo
-        implementa. In quei casi si ripiega su ``from_input``.
+        Dove il selettore è vietato (sotto-frame di altra origine) o non esiste
+        (fuori da Chromium) ripiega su :meth:`from_input`.
         """
+        global _dir_handle
+
         if not _native_picker_available():
             return await cls.from_input()
 
-        from pyscript import fs
+        handle = _dir_handle if _dir_handle is not None else await _remembered_handle()
+        if handle is not None and not await _readable(handle, ask=True):
+            # ``requestPermission`` consuma il gesto dell'utente, quindi qui non
+            # si può più aprire il selettore: meglio dirlo che fallire dopo.
+            _dir_handle = None
+            await _remember_handle(None)
+            raise AwsDirError("Permesso negato sulla cartella ricordata: "
+                              "premi di nuovo per sceglierne una.")
+        if handle is None:
+            handle = await _show_directory_picker()
+            await _remember_handle(handle)
 
-        try:
-            await fs.mount(mount_point, mode="read", id="awsdir")
-        except TypeError:                       # firme diverse fra versioni di PyScript
-            await fs.mount(mount_point)
-        try:
-            files = _read_tree(mount_point)
-        finally:
-            if not keep_mounted:
-                try:
-                    await fs.unmount(mount_point)
-                except Exception:
-                    pass
+        files = await _read_handle_tree(handle)
         if not files:
+            _dir_handle = None                  # sbagliata: non ricordarla
+            await _remember_handle(None)
             raise AwsDirError(
                 "Nella cartella scelta non ci sono config, credentials né file di cache: "
                 "probabilmente non è ~/.aws.")
-        return cls(files, origin=f"cartella scelta dall'utente ({mount_point})")
+        _dir_handle = handle
+        return cls(files, origin=f"cartella scelta dall'utente ({handle.name})")
 
     @classmethod
     async def from_input(cls) -> "AwsDirectory":
         """Fa scegliere la cartella con ``<input type=file webkitdirectory>``.
 
-        Un file input non ha il limite del selettore nativo sui sotto-frame di
-        altra origine. Dà solo lettura, ricorsiva, e qui basta: la cartella
-        viene letta una volta sola e mai scritta.
+        Un file input non ha il limite del selettore sui sotto-frame di altra
+        origine, e la sola lettura qui basta.
         """
         import asyncio
 
@@ -584,13 +673,6 @@ class AwsDirectory:
                 "probabilmente non è ~/.aws.")
         return cls(files, origin="cartella scelta dall'utente (file input)")
 
-    @classmethod
-    async def open(cls, path: str = "~/.aws", mount_point: str = "/aws") -> "AwsDirectory":
-        """Selettore nel browser, disco altrove."""
-        if IN_PYODIDE:
-            return await cls.pick(mount_point)
-        return cls.from_path(path)
-
     # --------------------------------------------------------------- profili
     def profile_names(self) -> list:
         """Profili trovati, ``default`` per primo."""
@@ -602,24 +684,20 @@ class AwsDirectory:
                 raise AwsDirError(
                     f"Profilo '{profile}' assente. Disponibili: {', '.join(self.profile_names())}")
             return profile
-        chosen = os.environ.get("AWS_PROFILE") or "default"
-        if chosen not in self.profiles:
+        if "default" not in self.profiles:
             raise AwsDirError(
-                f"Nessun profilo indicato e '{chosen}' non esiste. "
+                f"Nessun profilo indicato e 'default' non esiste. "
                 f"Disponibili: {', '.join(self.profile_names())}")
-        return chosen
+        return "default"
 
     def region_for(self, profile=None) -> str | None:
-        """Region del profilo, poi le variabili d'ambiente, poi ``None``.
+        """Region del profilo, o ``None``.
 
         Di proposito *non* ripiega su ``sso_region``: quella è la region del
-        portale SSO, non quella dei servizi. Usarla manderebbe le chiamate in
-        una region sbagliata, dove una tabella omonima risponde 0 risultati
-        invece di dare errore.
+        portale SSO, e manderebbe le chiamate dove una tabella omonima risponde
+        0 risultati invece di dare errore.
         """
-        settings = self.profiles.get(self._resolve_profile(profile), {})
-        return (settings.get("region") or os.environ.get("AWS_REGION")
-                or os.environ.get("AWS_DEFAULT_REGION"))
+        return self.profiles.get(self._resolve_profile(profile), {}).get("region")
 
     def expected_account(self, profile=None) -> str | None:
         """L'account a cui punta il profilo, se dichiarato (``sso_account_id``)."""
@@ -677,14 +755,12 @@ class AwsDirectory:
             if settings.get("role_arn") and role == settings["role_arn"].split("/")[-1]:
                 score += 40
 
-            source = CredentialSource(
+            expires_at = _to_datetime(creds.get("Expiration", creds.get("expiration")))
+            found.append(CredentialSource(
                 access_key_id=access, secret_access_key=secret,
                 session_token=creds.get("SessionToken") or creds.get("sessionToken"),
-                expires_at=_to_datetime(creds.get("Expiration", creds.get("expiration"))),
-                account=account, account_is_guess=guessed, role=role,
-                origin=path, score=score + (10 if _to_datetime(
-                    creds.get("Expiration", creds.get("expiration"))) is None else 0))
-            found.append(source)
+                expires_at=expires_at, account=account, account_is_guess=guessed,
+                role=role, origin=path, score=score + (10 if expires_at is None else 0)))
 
         far_past = datetime.min.replace(tzinfo=timezone.utc)
         found.sort(key=lambda s: (s.valid, s.score, s.expires_at or far_past), reverse=True)
@@ -703,14 +779,16 @@ class AwsDirectory:
         if not found:
             raise NoCredentialsFound(
                 f"Nessuna credenziale per il profilo '{name}'.\n"
-                f"  aws sso login --profile {name}\n"
-                f"  aws sts get-caller-identity --profile {name}   # popola ~/.aws/cli/cache")
+                f"  aws sso login --profile {name} && "
+                f"aws sts get-caller-identity --profile {name}")
 
         usable = found if allow_expired else [s for s in found if s.valid]
         if not usable:
             raise CredentialsExpired(
                 f"Le credenziali per '{name}' sono scadute ({found[0].describe()}).\n"
-                f"  aws sso login --profile {name}")
+                f"  aws sso login --profile {name} && "
+                f"aws sts get-caller-identity --profile {name}\n"
+                "Poi rileggi la cartella: il login da solo non tocca cli/cache.")
 
         wanted = self.expected_account(name)
         if require_account and wanted:
@@ -719,7 +797,8 @@ class AwsDirectory:
                 raise AccountMismatch(
                     f"Il profilo '{name}' punta all'account {wanted}, ma le credenziali "
                     f"disponibili sono di: {', '.join(sorted({s.account or '?' for s in usable}))}.\n"
-                    f"  aws sso login --profile {name}")
+                    f"  aws sso login --profile {name} && "
+                    f"aws sts get-caller-identity --profile {name}")
             return matching[0]
         return usable[0]
 
@@ -735,9 +814,8 @@ class AwsDirectory:
         region = region or self.region_for(name)
         if not region:
             raise AwsDirError(
-                f"Nessuna region per '{name}': passala a session()/client(), "
-                f"scrivila nel profilo oppure esporta AWS_REGION. "
-                f"(sso_region non viene usata: è la region del portale SSO, "
+                f"Nessuna region per '{name}': passala a session()/client() o "
+                f"scrivila nel profilo. (sso_region è la region del portale SSO, "
                 f"non quella dei servizi.)")
 
         key = (name, source.access_key_id, region)
