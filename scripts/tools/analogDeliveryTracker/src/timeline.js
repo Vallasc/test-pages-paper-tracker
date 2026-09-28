@@ -142,16 +142,20 @@ export function entriesForTracking(tracking, errors, dryRuns, logOutputs, wantFl
     }
 
     for (const request of flow.ocrRequests ?? []) {
+      // il tipo di documento va in chip, dove si legge a colpo d'occhio come
+      // tutto il resto; il sottotitolo tiene la uri, che dice *quale* documento
+      const kind = request.documentType;
+      const uri = request.uri ?? "";
       const asked = parseTs(request.requestTimestamp);
       if (asked) {
-        result.push(entry("ocr", asked, asked, "Richiesta OCR",
-                          request.documentType ?? "", [request.attachmentEventId], request));
+        result.push(entry("ocr", asked, asked, "Richiesta OCR", uri,
+                          [kind, request.attachmentEventId], request));
       }
       const answered = parseTs(request.responseTimestamp);
       if (answered) {
         const status = request.responseStatus ?? "?";
-        result.push(entry("ocr", answered, answered, `Risposta OCR: ${status}`,
-                          request.documentType ?? "", [request.finalEventId], request));
+        result.push(entry("ocr", answered, answered, `Risposta OCR: ${status}`, uri,
+                          [kind, request.finalEventId], request));
       }
     }
   }
