@@ -1,0 +1,82 @@
+---
+config:
+  theme: redux
+  look: neo
+  layout: elk
+  elk:
+    mergeEdges: false
+  themeVariables:
+    edgeLabelBackground: '#ffffff'
+    altBackground: '#fff'
+    background: '#DCEEFF'
+---
+stateDiagram-v2
+  GestioneGiacenza --> Accettazione23L: RECAG012(**)
+  Accettazione23L --> GestioneGiacenza
+  [*] --> InGiacenza: RECAG011A
+
+  state GestioneGiacenza {
+    direction TB
+
+    state ConsegnatoPressoGiacenza {
+      direction TB
+      [*] --> Preesito_5
+      Preesito_5 --> Demat_5: RECAG005B<br>[ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+      Demat_5 --> Demat_5: RECAG005<br> [ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+      Demat_5 --> [*]
+    }
+    state ConsegnatoPressoGiacenzaPersonaAbilitata {
+      direction TB
+      [*] --> Preesito_6
+      Preesito_6 --> Demat_6: RECAG006B<br>[ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+      Demat_6 --> Demat_6: RECAG006B<br>[ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+      Demat_6 --> [*]
+    }
+    state MancataConsegnatoPressoGiacenza {
+      direction TB
+      [*] --> Preesito_7
+      Preesito_7 --> Demat_7: RECAG007B<br>[Plico]<br>[ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+      Demat_7 --> Demat_7: RECAG007B<br>[Plico]<br>[ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+      Demat_7 --> [*]
+    }
+    %% Compiuta Giacenza
+    state CompiutaGiacenza {
+      direction TB
+      [*] --> Preesito_8
+      Preesito_8 --> Demat_8: RECAG008B<br>[Plico]
+      Demat_8 --> [*]
+    }    
+    InGiacenza --> CompiutaGiacenza: RECAG008A
+    InGiacenza --> MancataConsegnatoPressoGiacenza: RECAG007A
+    InGiacenza --> ConsegnatoPressoGiacenzaPersonaAbilitata: RECAG006A
+    InGiacenza --> ConsegnatoPressoGiacenza: RECAG005A
+    InGiacenza-->InGiacenza: RECAG011B<br>[ARCAD|CAD]\(\*\)<br>[23L]\(\*\)
+  }
+
+  %% Furto
+  InGiacenza --> Furto: RECAG004
+  Furto --> [*]
+  
+  %% Chiusura fascicolo
+  ConsegnatoPressoGiacenza --> [*]:RECAG005C
+  ConsegnatoPressoGiacenzaPersonaAbilitata --> [*]:RECAG006C
+  CompiutaGiacenza --> [*]:RECAG008C
+  MancataConsegnatoPressoGiacenza --> [*]:RECAG007C
+
+  %% Etichette
+  GestioneGiacenza: Gestione in giacenza
+  InGiacenza: In giacenza
+  Accettazione23L: Accettazione 23L
+  ConsegnatoPressoGiacenza: Consegnato presso giacenza
+  ConsegnatoPressoGiacenzaPersonaAbilitata: Consegnato presso giacenza<br>a persona abilitata
+  CompiutaGiacenza: Compiuta giacenza
+  MancataConsegnatoPressoGiacenza: Mancata consegna<br>presso giacenza
+
+  Preesito_5: Preesito
+  Demat_5: Demat
+  Preesito_6: Preesito
+  Demat_6: Demat
+  Preesito_8: Preesito
+  Demat_8: Demat
+  Preesito_7: Preesito
+  Demat_7: Demat

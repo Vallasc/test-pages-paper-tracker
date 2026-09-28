@@ -1,0 +1,94 @@
+---
+config:
+  theme: redux
+  look: neo
+  layout: elk
+  elk:
+    mergeEdges: false
+  themeVariables:
+    edgeLabelBackground: '#ffffff'
+---
+stateDiagram-v2
+  direction TB
+
+  %% Non rendicontabile
+  NonRendicontabile --> PresaInCarico
+  PresaInCarico --> NonRendicontabile:RECRS013 (*)
+  NonRendicontabile --> [*]
+  
+  state MancataConsegna {
+    direction TB
+    [*] --> Preesito2
+    Preesito2 --> Demat2:RECRS002B [Plico]
+    Demat2 --> [*]
+  }
+  state IrreperibilitaAssoluta {
+    direction TB
+    [*] --> Preesito2i
+    Preesito2i --> Demat2i:RECRS002E [Plico]
+    Demat2i --> [*]
+  }
+  state MancataConsegnaGiacenza {
+    direction TB
+    [*] --> Preesito4
+    Preesito4 --> Demat4:RECRS004B [Plico]
+    Demat4 --> [*]
+  }
+  state CompiutaGiacenza {
+    direction TB
+    [*] --> Preesito5
+    Preesito5 --> Demat5:RECRS005B [Plico]
+    Demat5 --> [*]
+  }
+
+  %% Presa in carico
+  [*] --> PresaInCarico
+  PresaInCarico --> Consegnato:RECRS001C
+  PresaInCarico --> MancataConsegna:RECRS002A
+  PresaInCarico --> IrreperibilitaAssoluta:RECRS002D
+  PresaInCarico --> Inesito:RECRS010
+  PresaInCarico --> Furto:RECRS006
+
+  %% Chiusura fascicolo
+  Consegnato --> [*]
+  MancataConsegna --> [*]:RECRS002C
+  IrreperibilitaAssoluta --> [*]:RECRS002F
+  ConsegnatoGiacenza --> [*]
+  MancataConsegnaGiacenza --> [*]:RECRS004C
+  CompiutaGiacenza --> [*]:RECRS005C
+
+  %% Giacenza
+  Inesito --> InGiacenza:RECRS011
+  InGiacenza --> Furto:RECRS006
+  InGiacenza --> ConsegnatoGiacenza:RECRS003C
+  InGiacenza --> MancataConsegnaGiacenza:RECRS004A
+  InGiacenza --> CompiutaGiacenza:RECRS005A
+
+  %% Furto
+  Inesito --> Furto:RECRS006
+  Furto --> [*]
+  
+  %% Causa forza maggiore
+  PresaInCarico --> CausaForzaMaggiore:RECRS015 (**)
+  CausaForzaMaggiore --> PresaInCarico
+
+
+  %% Etichette
+  Preesito2:Preesito
+  Demat2:Demat
+  MancataConsegna:Mancata consegna
+  IrreperibilitaAssoluta:Irreperibilità assoluta
+  Preesito2i:Preesito
+  Demat2i:Demat
+  ConsegnatoGiacenza:Consegnato presso giacenza
+  MancataConsegnaGiacenza:Mancata consegna<br>presso giacenza
+  Preesito4:Preesito
+  Demat4:Demat
+  CompiutaGiacenza:Compiuta giacenza
+  Preesito5:Preesito
+  Demat5:Demat
+  PresaInCarico:Presa in carico
+  InGiacenza:In giacenza
+  Furto:Furto, smarrimento o deterioramento
+  CausaForzaMaggiore:Causa di forza maggiore
+  NonRendicontabile:Non rendicontabile

@@ -6,6 +6,8 @@
 <title>Analog Delivery Tracker</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<link rel="stylesheet" href="https://pyscript.net/releases/2026.7.3/core.css">
+<script type="module" src="https://pyscript.net/releases/2026.7.3/core.js"></script>
 
 <!-- Il look "neo" dei temi Mermaid 12 chiede "Recursive Variable", che Mermaid
      nomina ma non distribuisce: senza questo foglio il browser ripiega su Arial
@@ -29,8 +31,8 @@
   }
 </style>
 <style>
-  /* Rotella d'attesa. In CSS a mano e non in classi Tailwind: gira mentre i
-     moduli si caricano, cioè prima che il CDN abbia generato le sue classi.
+  /* Rotella d'attesa. In CSS a mano e non in classi Tailwind: gira mentre
+     PyScript si avvia, cioè prima che il CDN abbia generato le sue classi.
      Prende il colore del testo che la contiene. */
   .spin { display: inline-block; width: .85em; height: .85em; border-radius: 50%;
           border: 2px solid currentColor; border-right-color: transparent;
@@ -39,7 +41,7 @@
 
   /* Altezza della barra in cima: le intestazioni dei tracking ci si fermano
      sotto. Il valore qui è solo il ripiego prima che la pagina la misuri,
-     perché la barra va a capo sugli schermi stretti (vedi trackHeaderHeight). */
+     perché la barra va a capo sugli schermi stretti (vedi track_header_height). */
   :root { --page-header: 65px; }
 
   /* La riga verticale della timeline è il bordo sinistro della lista; i punti
@@ -84,7 +86,7 @@
       <span id="conn-text">Non connesso</span>
     </span>
 
-    <button id="btn-pick" type="button" disabled title="Caricamento in corso"
+    <button id="btn-pick" type="button" disabled title="Avvio di Pyodide e boto3 in corso"
             class="inline-flex cursor-pointer items-center gap-2 rounded-md bg-brand px-3.5 py-1.5
                    text-sm font-medium text-white shadow-sm hover:bg-blue-900
                    disabled:cursor-not-allowed disabled:bg-slate-400">
@@ -198,10 +200,18 @@
   <div id="detail-modal-body" class="px-5 py-4"></div>
 </dialog>
 
-<!-- L'SDK AWS non è qui: `aws_dir.js` lo carica con un import() dinamico al
-     primo collegamento, e solo il client che serve. Chi apre la pagina e non
-     si connette non scarica niente. -->
-<script type="module" src="./src/tracker.js"></script>
+<!-- Versioni fissate: boto3 tira botocore con un vincolo largo (>=1.43.103,
+     <1.44.0), ma è botocore quello di cui aws_dir.py rimpiazza il transport
+     (URLLib3Session). Lasciarlo libero vuol dire che una sua uscita può
+     cambiare sotto i piedi il codice che stiamo patchando. -->
+<script type="py" src="./src/tracker.py"
+        config='{"packages": ["boto3==1.43.103", "botocore==1.43.103"],
+                 "files": {"./src/aws_dir.py": "./aws_dir.py",
+                           "./src/constants.py": "./constants.py",
+                           "./src/data.py": "./data.py",
+                           "./src/diagram.py": "./diagram.py",
+                           "./src/timeline.py": "./timeline.py",
+                           "./src/view.py": "./view.py"}}'></script>
 
 </body>
 </html>

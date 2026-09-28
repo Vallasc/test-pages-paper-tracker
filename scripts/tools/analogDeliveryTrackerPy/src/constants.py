@@ -5,6 +5,7 @@ enum del microservizio: se cambiano quelli, si tocca solo questo file.
 """
 
 import re
+from urllib.parse import quote
 
 # =============================================================================
 # AWS
@@ -24,6 +25,82 @@ TABLES = {
 #: indice su cui si interroga l'``attemptId``
 ATTEMPT_INDEX = "attemptId-pcRetry-index"
 
+#: log del microservizio. La query si fa sempre, quanto indietro sia l'evento:
+#: oltre la retention del gruppo non fallisce, torna vuota.
+LOG_GROUP = "/aws/ecs/pn-paper-tracker"
+
+#: Diagrammi di flusso per prodotto, in percorso relativo alla pagina: titolo e
+#: file, perché l'890 ne ha due — il flusso principale e il dettaglio di cosa
+#: succede in giacenza, che nel primo è un solo riquadro. Manca un prodotto? Il
+#: bottone non compare, senza bisogno di altro.
+DIAGRAMS = {
+    "AR":  (("", "diagrams/AR.mermaid"),),
+    "890": (("Consegna", "diagrams/890.mermaid"),
+            ("Giacenza", "diagrams/890_giacenza.mermaid")),
+    "RIR": (("", "diagrams/RIR.mermaid"),),
+    "RS":  (("", "diagrams/RS.mermaid"),),
+    "RIS": (("", "diagrams/RIS.mermaid"),),
+}
+
+#: quanto guardare prima e dopo l'evento, e il tetto alle righe riportate
+LOG_WINDOW_MINUTES = 5
+LOG_MAX_EVENTS = 200
+
+
+# =============================================================================
+# Link alla console
+# =============================================================================
+# Nell'URL va solo la region: l'account è quello con cui sei già entrato in
+# console, che non è detto sia quello del profilo scelto qui.
+def _fragment(value, passes=2):
+    """L'escape dei frammenti della console: percent-encoding, con ``$`` per ``%``.
+
+    I nomi (log group, filtri) sono codificati due volte, i separatori una.
+    """
+    encoded = str(value)
+    for _ in range(passes):
+        encoded = quote(encoded, safe="")
+    return encoded.replace("%", "$")
+
+
+def console_host(region):
+    return f"https://{region}.console.aws.amazon.com"
+
+
+def dynamo_url(table, region, key=None):
+    """L'esploratore di item, in query sulla partition key.
+
+    Query e non item singolo: ``trackingId`` è chiave intera solo in
+    PaperTrackings, mentre Errors e DryRunOutputs hanno anche ``created``, e per
+    quelle la risposta è più di un record.
+
+    La forma del frammento non è documentata da AWS: è quella che la console
+    produce da sé. Se cambia si finisce sulla tabella, non su un errore, e il
+    link resta copiabile.
+    """
+    home = f"{console_host(region)}/dynamodbv2/home?region={region}"
+    params = [f"table={quote(table, safe='')}", "maximize=true"]
+    if key:
+        params += ["operation=QUERY", f"pk={quote(key, safe='')}"]
+    return f"{home}#item-explorer?" + "&".join(params)
+
+
+def logs_url(filter_pattern, region, start=None, end=None):
+    """Il log group filtrato, e se si sa quando, già sulla finestra giusta.
+
+    ``start`` e ``end`` sono millisecondi epoch. Senza, la console apre
+    sull'intervallo di default e per un evento di ieri non trova niente: il
+    link sembra rotto anche quando i log ci sono.
+    """
+    equals, ampersand = _fragment("=", 1), _fragment("&", 1)
+    query = []
+    if start is not None and end is not None:
+        query += [f"start{equals}{int(start)}", f"end{equals}{int(end)}"]
+    query.append(f"filterPattern{equals}{_fragment(chr(34) + filter_pattern + chr(34))}")
+    return (f"{console_host(region)}/cloudwatch/home?region={region}"
+            f"#logsV2:log-groups/log-group/{_fragment(LOG_GROUP)}"
+            f"/log-events{_fragment('?', 1)}{ampersand.join(query)}")
+
 #: chiavi di localStorage: l'ultimo profilo scelto e quante volte ognuno è stato
 #: usato. L'ordine della tendina si impara dall'uso, perché i nomi dei profili
 #: dipendono dalla configurazione di chi apre la pagina.
@@ -35,7 +112,9 @@ PROFILE_USAGE_KEY = "analogDeliveryTracker.profileUsage"
 # Composizione del trackingId
 # =============================================================================
 # Il trackingId è ``<attemptId>.PCRETRY_<n>`` e cambia forma con il prodotto:
-# i prodotti con feedback multipli hanno anche il tentativo, gli altri no.
+# i prodotti con feedback multipli hanno anche il tentativo, gli altri no. Le
+# comunicazioni bonarie hanno un prefisso tutto loro e chiudono l'attemptId con
+# il tipo di recapito; esistono solo come RS.
 TRACKING_SCHEMES = {
     "ANALOG_DOMICILE": {
         "prefix": "PREPARE_ANALOG_DOMICILE",
@@ -45,15 +124,24 @@ TRACKING_SCHEMES = {
         "prefix": "PREPARE_SIMPLE_REGISTERED_LETTER",
         "has_attempt": False,
     },
+    "ANALOG_MESSAGE": {
+        "prefix": "PREPARE_ANALOG_MESSAGE",
+        "has_attempt": True,
+        "suffix": "DELIVERYTYPE_RS",
+    },
 }
+
+#: prefisso che distingue una comunicazione bonaria
+BONARIE_PREFIX = TRACKING_SCHEMES["ANALOG_MESSAGE"]["prefix"]
 
 #: (valore, etichetta, schemi da interrogare) — il primo è il default
 PRODUCTS = (
-    ("AUTO", "Tutti i prodotti", ("ANALOG_DOMICILE", "SIMPLE_REGISTERED_LETTER")),
+    ("AUTO", "Tutti i prodotti",
+     ("ANALOG_DOMICILE", "SIMPLE_REGISTERED_LETTER", "ANALOG_MESSAGE")),
     ("AR", "AR — Raccomandata A/R", ("ANALOG_DOMICILE",)),
     ("890", "890 — Notifiche a mezzo posta", ("ANALOG_DOMICILE",)),
     ("RIR", "RIR — Internazionale A/R", ("ANALOG_DOMICILE",)),
-    ("RS", "RS — Raccomandata semplice", ("SIMPLE_REGISTERED_LETTER",)),
+    ("RS", "RS — Raccomandata semplice", ("SIMPLE_REGISTERED_LETTER", "ANALOG_MESSAGE")),
     ("RIS", "RIS — Internazionale semplice", ("SIMPLE_REGISTERED_LETTER",)),
 )
 
@@ -63,21 +151,31 @@ PRODUCT_SCHEMES = {value: schemes for value, _, schemes in PRODUCTS}
 MAX_RECINDEX = 9
 MAX_ATTEMPT = 5
 
-#: riconosce entrambe le forme; ``ATTEMPT`` è opzionale
+#: riconosce tutte le forme; ``ATTEMPT`` e ``DELIVERYTYPE`` sono opzionali
 TRACKING_RE = re.compile(
     r"^(?P<prefix>[A-Z_]+)\.IUN_(?P<iun>.+?)\.RECINDEX_(?P<rec>\d+)"
-    r"(?:\.ATTEMPT_(?P<att>\d+))?\.PCRETRY_(?P<pc>\d+)$")
+    r"(?:\.ATTEMPT_(?P<att>\d+))?(?:\.DELIVERYTYPE_(?P<delivery>[A-Z0-9]+))?"
+    r"\.PCRETRY_(?P<pc>\d+)$")
 
 
 def build_attempt_id(scheme, iun, recindex, attempt=0):
     """``attemptId`` per lo schema indicato: è la partition key di ATTEMPT_INDEX."""
     config = TRACKING_SCHEMES[scheme]
-    base = f"{config['prefix']}.IUN_{iun}.RECINDEX_{recindex}"
-    return f"{base}.ATTEMPT_{attempt}" if config["has_attempt"] else base
+    parts = [config["prefix"], f"IUN_{iun}", f"RECINDEX_{recindex}"]
+    if config["has_attempt"]:
+        parts.append(f"ATTEMPT_{attempt}")
+    if config.get("suffix"):
+        parts.append(config["suffix"])
+    return ".".join(parts)
 
 
 def has_attempt(scheme):
     return TRACKING_SCHEMES[scheme]["has_attempt"]
+
+
+def is_bonaria(tracking_id):
+    """Vero per le comunicazioni bonarie, riconoscibili dal prefisso."""
+    return (tracking_id or "").startswith(f"{BONARIE_PREFIX}.")
 
 
 def parse_tracking_id(tracking_id):

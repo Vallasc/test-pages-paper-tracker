@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWS WebContainer Probe — Node nel browser</title>
+
+<!-- Va prima di tutto: su un hosting statico come GitHub Pages gli header
+     dell'isolamento non si possono impostare, e questo li fa mettere a un
+     service worker, ricaricando una volta sola. Dove il server li manda già
+     (serve.mjs) si accorge che la pagina è isolata e non fa niente. -->
+<script src="./coi-serviceworker.js"></script>
+
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; padding: 1.5rem; background: #f1f5f9; color: #1e293b;
+         font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+  main { max-width: 56rem; margin: 0 auto; }
+  h1 { margin: 0 0 .25rem; font-size: 1.05rem; }
+  p.lead { margin: 0 0 1.25rem; color: #64748b; font-size: .8rem; }
+  section { padding: 1rem 1.25rem; border: 1px solid #e2e8f0; border-radius: .6rem;
+            background: #fff; margin-bottom: 1rem; }
+  h2 { margin: 0 0 .75rem; font-size: .75rem; font-weight: 600; letter-spacing: .04em;
+       text-transform: uppercase; color: #94a3b8; }
+  label { display: block; margin-bottom: .75rem; font-size: .75rem; font-weight: 600;
+          color: #475569; }
+  label span { display: block; margin-bottom: .2rem; font-weight: 500; }
+  input, select { width: 100%; box-sizing: border-box; padding: .45rem .6rem;
+                  border: 1px solid #cbd5e1; border-radius: .35rem;
+                  font: inherit; font-family: ui-monospace, monospace; background: #fff; }
+  select:disabled { background: #f1f5f9; color: #94a3b8; }
+  .row { display: flex; flex-wrap: wrap; gap: 0 1rem; }
+  .row > label { flex: 1 1 12rem; }
+  button { padding: .45rem 1.1rem; border: 0; border-radius: .35rem; background: #0b3d91;
+           color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #94a3b8; cursor: not-allowed; }
+  #message, #boot-status { margin: .75rem 0 0; font-size: .8rem; color: #64748b; }
+  .good { color: #15803d; }
+  .bad { color: #be123c; }
+  p.note { margin: 0 0 .75rem; font-size: .75rem; color: #64748b; }
+  table { width: 100%; border-collapse: collapse; font: 12px/1.6 ui-monospace, monospace; }
+  th { text-align: left; font-weight: 600; color: #94a3b8; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  th, td { padding: .3rem .5rem; border-bottom: 1px solid #f1f5f9; }
+  td:nth-child(3) { text-align: right; }
+  tr.kind-aws td:last-child { color: #15803d; font-weight: 600; }
+  tr.kind-altro td { color: #be123c; font-weight: 600; }
+  pre { margin: 0; padding: 1rem 1.25rem; border: 1px solid #e2e8f0; border-radius: .6rem;
+        background: #0f172a; color: #e2e8f0; overflow: auto; min-height: 6rem;
+        max-height: 26rem; font: 12px/1.5 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+
+<body>
+<main>
+  <h1>AWS WebContainer Probe</h1>
+  <p class="lead">
+    Uno script Node non modificato che legge <code>~/.aws</code> e interroga
+    DynamoDB, eseguito dentro un WebContainer nel browser.
+  </p>
+
+  <section>
+    <h2>1 · Container</h2>
+    <button id="btn-boot" type="button">Avvia WebContainer</button>
+    <p id="boot-status">Controllo l'isolamento della pagina…</p>
+  </section>
+
+  <section>
+    <h2>2 · Credenziali da montare</h2>
+    <button id="btn-pick" type="button">Carica .aws</button>
+    <!-- Ripiego per quando showDirectoryPicker è vietato: in un iframe di
+         origine diversa dal top Chromium lo blocca, e non c'è un allow=. -->
+    <input id="dir-input" type="file" webkitdirectory directory hidden>
+    <p id="message">Avvia il container e scegli la cartella <code>.aws</code>.</p>
+    <div class="row" style="margin-top: 1rem">
+      <label><span>Profilo</span>
+        <select id="profile" disabled><option>—</option></select></label>
+      <label><span>Region</span>
+        <input id="region" value="eu-south-1" spellcheck="false"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · Esecuzione</h2>
+    <div class="row">
+      <label><span>Tabella</span>
+        <input id="table" value="pn-PaperTrackings" spellcheck="false"></label>
+      <label><span>Chiave</span>
+        <input id="key-name" value="trackingId" spellcheck="false"></label>
+    </div>
+    <label><span>Valore</span>
+      <input id="key-value" placeholder="PREPARE_ANALOG_DOMICILE.IUN_….PCRETRY_0"
+             spellcheck="false"></label>
+    <button id="btn-run" type="button" disabled>node get-item.mjs</button>
+  </section>
+
+  <pre id="output"></pre>
+
+  <section style="margin-top: 1rem">
+    <h2>Audit di rete</h2>
+    <p class="note">
+      Le richieste che partono da <em>questa</em> pagina. Il container gira in un
+      iframe di un'altra origine e ha il suo <code>window</code>: le sue chiamate
+      qui non compaiono, DynamoDB compreso. Per quelle serve DevTools → Network
+      con i frame su «tutti» — oppure, più semplice, un errore CORS in console
+      che nomina l'host per intero: significa che la richiesta è partita davvero
+      verso quell'host.
+    </p>
+    <table>
+      <thead><tr><th>host</th><th>via</th><th>n.</th><th>cos'è</th></tr></thead>
+      <tbody id="audit"></tbody>
+    </table>
+  </section>
+</main>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

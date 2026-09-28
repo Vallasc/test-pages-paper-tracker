@@ -1,0 +1,93 @@
+---
+config:
+  theme: redux
+  look: neo
+  layout: elk
+  elk:
+    mergeEdges: false
+  themeVariables:
+    edgeLabelBackground: '#ffffff'
+---
+stateDiagram-v2
+  direction TB
+
+  state Consegnato {
+    direction TB
+    [*] --> Preesito1
+    Preesito1 --> Demat1: RECAG001B<br>[23L]
+    Demat1 --> [*]
+  }
+  
+  state ConsegnatoPersonaAbilitata {
+    direction TB
+    [*] --> Preesito2
+    Preesito2 --> Demat2: RECAG002B<br>[23L] [CAN]
+    Demat2 --> Demat2: RECAG002B<br>[23L] [CAN]
+    Demat2 --> [*]
+  }
+  state MancataConsegna {
+    direction TB
+    [*] --> Preesito3
+    Preesito3 --> Demat3:RECAG003B<br>[Plico]
+    Demat3 --> [*]
+  }
+  state IrreperibilitaAssoluta {
+    direction TB
+    [*] --> Preesito3i
+    Preesito3i --> Demat3i:RECAG003E<br>[Plico]
+    Demat3i --> [*]
+  }
+
+  %% Presa in carico
+  [*] --> PresaInCarico
+  PresaInCarico --> Furto:RECAG004
+  PresaInCarico --> Consegnato:RECAG001A
+  PresaInCarico --> ConsegnatoPersonaAbilitata:RECAG002A
+  PresaInCarico --> MancataConsegna:RECAG003A
+  PresaInCarico --> IrreperibilitaAssoluta:RECAG003D
+
+  %% Giacenza
+  PresaInCarico --> Inesito: RECAG010
+  Inesito --> GestioneGiacenza: RECAG011A
+  Inesito --> Furto:RECAG004
+
+  %% Chiusura fascicolo
+  Consegnato --> [*]:RECAG001C
+  ConsegnatoPersonaAbilitata --> [*]:RECAG002C
+  MancataConsegna --> [*]:RECAG003C
+  IrreperibilitaAssoluta --> [*]:RECAG003F
+
+  %% Furto
+  Furto --> [*]
+
+  %% Non rendicontabile
+  NonRendicontabile --> PresaInCarico
+  PresaInCarico --> NonRendicontabile:RECAG013 (***)
+  NonRendicontabile --> [*]
+  
+  %% Causa forza maggiore
+  CausaForzaMaggiore --> PresaInCarico
+  PresaInCarico --> CausaForzaMaggiore:RECAG015 (****)
+
+  GestioneGiacenza --> [*]
+
+  %% Etichette
+  PresaInCarico:Presa in carico
+  Consegnato: Consegnato
+  ConsegnatoPersonaAbilitata: Consegnato a persona abilitata
+  MancataConsegna: Mancata consegna
+  IrreperibilitaAssoluta: Irreperibilità assoluta
+  Preesito1:Preesito
+  Demat1:Demat
+  Preesito2:Preesito
+  Demat2:Demat
+  Preesito3:Preesito
+  Demat3:Demat
+  Preesito3i:Preesito
+  Demat3i:Demat
+  GestioneGiacenza: Gestione in giacenza
+  CausaForzaMaggiore:Causa di forza maggiore
+  NonRendicontabile:Non rendicontabile
+
+  %% Stile personalizzato
+  style GestioneGiacenza fill:#DCEEFF,stroke:#4682B4

@@ -1,4 +1,4 @@
-"""awsdir — credenziali AWS dalla cartella ``.aws``, nel browser.
+"""aws_dir — credenziali AWS dalla cartella ``.aws``, nel browser.
 
 Un solo file da copiare in un altro progetto PyScript. Fa tre cose:
 
@@ -13,9 +13,9 @@ sessione (vedi ``enable_boto3_in_pyodide``).
 
 Uso::
 
-    import awsdir
+    import aws_dir
 
-    aws = await awsdir.AwsDirectory.pick()      # da un gestore di evento
+    aws = await aws_dir.AwsDirectory.pick()     # da un gestore di evento
     ddb = aws.client("dynamodb", "sso_pn-core-dev", require_account=True)
 
 Scelta esplicita della sorgente, quando in cache ci sono più account::
@@ -70,6 +70,15 @@ class AccountMismatch(AwsDirError):
 # =============================================================================
 # boto3 dentro Pyodide
 # =============================================================================
+# botocore parla HTTP attraverso urllib3, che nel browser non ha socket. Da
+# urllib3 2.x il pacchetto si inietta da sé un backend Emscripten quando
+# ``sys.platform == "emscripten"``, ma per strada perde il ``Content-Type``:
+# provato su Pyodide 314, DynamoDB risponde 404 con una pagina HTML, che è la
+# risposta dell'endpoint a un POST senza ``application/x-amz-json-1.0``.
+#
+# Qui si prende un'altra strada: si sostituisce il transport di botocore con una
+# XMLHttpRequest sincrona, che gli header li imposta uno per uno e li si può
+# filtrare a mano. Vedi ``enable_boto3_in_pyodide`` per cosa viene patchato.
 _PYODIDE_REPORT = None
 
 # Header che il browser non lascia impostare: li mette lui, con lo stesso valore
@@ -83,7 +92,21 @@ _FORBIDDEN_HEADERS = frozenset({
 
 
 class _RawBody:
-    """Il minimo dell'oggetto urllib3 che botocore usa come ``raw``."""
+    """Il corpo della risposta, con l'interfaccia che botocore si aspetta.
+
+    ``AWSResponse.raw`` per botocore è una risposta urllib3, cioè un flusso da
+    leggere. La XHR invece il corpo ce l'ha già tutto in memoria, quindi qui si
+    fa il giro inverso: si riveste una stringa di byte dei pochi metodi che
+    botocore invoca davvero.
+
+    Per i servizi JSON — DynamoDB, CloudWatch Logs — serve solo ``stream()``:
+    ``AWSResponse.content`` fa ``b"".join(self.raw.stream())``. ``read()`` e
+    ``close()`` ci sono perché costano niente.
+
+    Non basterebbe per le operazioni che restituiscono un flusso vero, tipo
+    ``s3.get_object``: là botocore avvolge il corpo in ``StreamingBody``, che
+    chiama anche ``readable``, ``readinto``, ``readlines`` e ``tell``.
+    """
 
     def __init__(self, data: bytes):
         self._data = data
@@ -110,11 +133,24 @@ class _RawBody:
 
 
 def _xhr_send(self, request):
-    """Sostituisce ``URLLib3Session.send`` con una XMLHttpRequest sincrona.
+    """Il transport di botocore: manda la richiesta con una XMLHttpRequest.
 
-    Sincrona perché l'API di botocore non è async: blocca il thread della UI per
-    la durata della chiamata, quindi chi la usa da un'interfaccia grafica deve
-    cedere il controllo al browser prima (``await asyncio.sleep(0)``).
+    Prende una ``AWSRequest`` già firmata e restituisce una ``AWSResponse``,
+    che è il contratto di ``URLLib3Session.send``. La firma SigV4 è già stata
+    calcolata: qui non si tocca nulla che entri nella firma.
+
+    **Sincrona**, perché l'API di botocore non è async e non c'è modo di
+    restituirle una promessa. Per la durata della chiamata il thread della UI è
+    bloccato, quindi chi la invoca da un'interfaccia deve cedere il controllo al
+    browser prima (``await asyncio.sleep(0)``), o la pagina resta congelata
+    senza nemmeno aver ridisegnato il messaggio "sto cercando".
+
+    Gli header vietati vengono saltati (vedi ``_FORBIDDEN_HEADERS``): impostarli
+    è proibito e il browser li rimette da sé con lo stesso valore.
+
+    Una XHR fallita non solleva: arriva con ``status == 0``. Rete assente e
+    preflight CORS rifiutato si presentano così, e diventano entrambi un
+    ``EndpointConnectionError``, che è ciò che botocore sa gestire.
     """
     from js import XMLHttpRequest
     from botocore.awsrequest import AWSResponse
@@ -159,6 +195,14 @@ def _shim_urllib3():
     """
     import urllib3.util.ssl_ as ssl_module
 
+    # Da Pyodide 314 la stdlib porta uno stub di ``_ssl``, quindi il blocco
+    # ``try: import ssl`` dentro urllib3 riesce e i nomi ci sono già. Rimettere
+    # i nostri farebbe danno: ``DEFAULT_CIPHERS`` esiste solo perché lo
+    # aggiungiamo noi, e botocore lo importa in un ``try`` il cui fallback è
+    # ``None`` — dargli una stringa vuota gli fa chiamare ``set_ciphers("")``.
+    if hasattr(ssl_module, "ssl"):
+        return
+
     try:
         import ssl as stdlib_ssl
     except ImportError:
@@ -183,33 +227,50 @@ def _shim_urllib3():
         "create_urllib3_context": lambda *args, **kwargs: None,
         "ssl_wrap_socket": lambda *args, **kwargs: None,
     }
-    added = [name for name in placeholders if not hasattr(ssl_module, name)]
-    for name in added:
-        setattr(ssl_module, name, placeholders[name])
-    return added
+    for name, value in placeholders.items():
+        if not hasattr(ssl_module, name):
+            setattr(ssl_module, name, value)
 
 
-def enable_boto3_in_pyodide(force: bool = False) -> dict:
+def enable_boto3_in_pyodide(force: bool = False, patch_transport: bool = True) -> dict:
     """Rende boto3 utilizzabile in Pyodide. Idempotente.
 
-    Due interventi: i nomi mancanti in ``urllib3.util.ssl_`` (vedi
-    :func:`_shim_urllib3`) e il transport di botocore, sostituito con
-    XMLHttpRequest sincrona. Si patcha la **classe** ``URLLib3Session`` e non il
-    nome nel modulo, perché ``EndpointCreator.create_endpoint`` la tiene come
-    default di un argomento, valutato all'import.
+    Due interventi.
+
+    Il primo sono i nomi mancanti in ``urllib3.util.ssl_`` (vedi
+    :func:`_shim_urllib3`), che dalle Pyodide recenti non serve più.
+
+    Il secondo è il transport, e tocca tre attributi di ``URLLib3Session``:
+
+    * ``__init__`` diventa vuoto, così non nasce nessun ``PoolManager`` — cioè
+      nessun socket e nessun contesto SSL, che qui non esistono;
+    * ``send`` diventa :func:`_xhr_send`, che è dove passa tutto il traffico;
+    * ``close`` diventa vuoto, perché non c'è niente da chiudere.
+
+    Si patcha la **classe** e non il nome nel modulo, perché
+    ``EndpointCreator.create_endpoint`` la tiene come valore di default di un
+    argomento, valutato all'import: riassegnare l'attributo non avrebbe effetto.
+
+    Con ``patch_transport=False`` il transport resta quello di urllib3, che da
+    solo instrada via fetch quando ``sys.platform == "emscripten"``: serve a
+    provare se la sostituzione con XHR sia ancora necessaria.
     """
     global _PYODIDE_REPORT
     if _PYODIDE_REPORT is not None and not force:
         return _PYODIDE_REPORT
 
-    added = _shim_urllib3()
+    _shim_urllib3()
+    if not patch_transport:
+        _PYODIDE_REPORT = {"patched": True, "transport": "urllib3 (emscripten)"}
+        return _PYODIDE_REPORT
+
     from botocore.httpsession import URLLib3Session
 
     URLLib3Session.__init__ = lambda self, *args, **kwargs: None
     URLLib3Session.send = _xhr_send
     URLLib3Session.close = lambda self: None
 
-    _PYODIDE_REPORT = {"patched": True, "urllib3_shims": added, "transport": "XMLHttpRequest"}
+    _PYODIDE_REPORT = {"patched": True, "transport": "XMLHttpRequest"}
     return _PYODIDE_REPORT
 
 
@@ -277,6 +338,9 @@ _WANTED_DIRS = ("cli/cache", "sso/cache")
 #: aggiornati. Sta anche in IndexedDB, per sopravvivere ai refresh.
 _dir_handle = None
 
+#: Questi nomi, e l'``id`` passato al selettore, non seguono quello del modulo:
+#: sono chiavi di memoria, e cambiarle farebbe dimenticare a tutti la cartella
+#: già scelta e a Chrome da dove riaprire il selettore.
 _IDB_NAME = "awsdir"
 _IDB_STORE = "handles"
 _IDB_KEY = "aws-dir"
@@ -339,7 +403,12 @@ async def _idb_database():
 
 
 async def _remembered_handle():
-    """L'handle lasciato dalla visita precedente, o ``None``."""
+    """L'handle lasciato dalla visita precedente, o ``None``.
+
+    In incognito, su Chrome 153, rileggerlo dopo un reload uccide il renderer:
+    è una regressione di Chromium, non un errore intercettabile. Fuori
+    dall'incognito non si presenta, e si è scelto di non pagarne il prezzo.
+    """
     try:
         database = await _idb_database()
         store = database.transaction(_IDB_STORE, "readonly").objectStore(_IDB_STORE)
@@ -780,14 +849,14 @@ class AwsDirectory:
             raise NoCredentialsFound(
                 f"Nessuna credenziale per il profilo '{name}'.\n"
                 f"  aws sso login --profile {name} && "
-                f"aws sts get-caller-identity --profile {name}")
+                f"aws sts get-caller-identity --profile {name} --no-cli-pager")
 
         usable = found if allow_expired else [s for s in found if s.valid]
         if not usable:
             raise CredentialsExpired(
                 f"Le credenziali per '{name}' sono scadute ({found[0].describe()}).\n"
                 f"  aws sso login --profile {name} && "
-                f"aws sts get-caller-identity --profile {name}\n"
+                f"aws sts get-caller-identity --profile {name} --no-cli-pager\n"
                 "Poi rileggi la cartella: il login da solo non tocca cli/cache.")
 
         wanted = self.expected_account(name)
@@ -798,7 +867,7 @@ class AwsDirectory:
                     f"Il profilo '{name}' punta all'account {wanted}, ma le credenziali "
                     f"disponibili sono di: {', '.join(sorted({s.account or '?' for s in usable}))}.\n"
                     f"  aws sso login --profile {name} && "
-                    f"aws sts get-caller-identity --profile {name}")
+                    f"aws sts get-caller-identity --profile {name} --no-cli-pager")
             return matching[0]
         return usable[0]
 
