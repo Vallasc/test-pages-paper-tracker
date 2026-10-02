@@ -28,9 +28,25 @@ function el(elementId) {
   return document.getElementById(elementId);
 }
 
+// Mermaid arriva come UMD, per poterlo servire con `integrity`: definisce
+// `window.mermaid` e va solo configurato. Qui e non in un <script> inline,
+// così la CSP può fare a meno di 'unsafe-inline'.
+window.mermaid.initialize({ startOnLoad: false });
+
+/**
+ * Una region AWS è fatta così e basta.
+ *
+ * Senza questo controllo un `?region=attacker.com/` finisce in
+ * `https://attacker.com/.console.aws.amazon.com/…`, cioè nei link che la pagina
+ * offre da cliccare: non è XSS — lo schema è fisso — ma è una finta console a un
+ * clic di distanza, e l'URL si porta dietro IUN e account. L'SDK si difende da
+ * sé, rifiutando le region che non sono hostname validi; questi link no.
+ */
+const REGION_RE = /^[a-z0-9-]+$/;
+
 const state = {
   aws: null, ddb: null, logs: null,
-  logCache: {}, entryLogs: new Map(), payloads: new Map(),
+  logCache: {}, entryLogs: new Map(), payloads: new Map(), detailJson: null,
   region: null, account: null,
   // quello che l'URL chiede e che si può onorare solo più tardi: il profilo
   // esiste quando la cartella .aws è letta, la region al collegamento
@@ -197,9 +213,10 @@ function applyUrlParams() {
     el("inp-iun").value = tracking || iun;
   }
   const product = params.get("product");
-  if (product && product in k.PRODUCT_SCHEMES) el("sel-product").value = product;
+  if (product && Object.hasOwn(k.PRODUCT_SCHEMES, product)) el("sel-product").value = product;
   state.wantedAccount = params.get("account");
-  state.wantedRegion = params.get("region");
+  const region = params.get("region");
+  state.wantedRegion = region && REGION_RE.test(region) ? region : null;
 }
 
 /** Rimette la ricerca nell'URL, così si può condividere o salvare. */
@@ -296,7 +313,9 @@ async function fillProfiles() {
 
 /** Schemi di trackingId del prodotto scelto; in dubbio, li prova tutti. */
 function selectedSchemes() {
-  return k.PRODUCT_SCHEMES[el("sel-product").value] ?? k.PRODUCT_SCHEMES.AUTO;
+  const chosen = el("sel-product").value;
+  return Object.hasOwn(k.PRODUCT_SCHEMES, chosen)
+    ? k.PRODUCT_SCHEMES[chosen] : k.PRODUCT_SCHEMES.AUTO;
 }
 
 function searchingByTracking() {
@@ -384,11 +403,11 @@ async function showDiagram(product, codes, business) {
       drawings.push(
         (title ? '<h3 class="mb-1 text-xs font-semibold uppercase tracking-wide ' +
                  `text-slate-500">${escape(title)}</h3>` : "") +
-        `<div class="overflow-x-auto">${drawn.svg}</div>`);
+        `<div class="diagram-fit">${drawn.svg}</div>`);
     }
 
     body.innerHTML =
-      '<div class="max-h-[80vh] space-y-6 overflow-y-auto">' + drawings.join("") + "</div>" +
+      '<div class="max-h-[86vh] space-y-6 overflow-y-auto">' + drawings.join("") + "</div>" +
       '<p class="mt-2 text-xs text-slate-500">In verde gli stati raggiunti; ' +
       'un ✅ sulle frecce percorse e sul fascicolo chiuso, ❌ se si è ' +
       'chiuso in KO.</p>';
@@ -399,8 +418,22 @@ async function showDiagram(product, codes, business) {
 
 /** Delega: i risultati sono riscritti a ogni ricerca. */
 el("results").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-detail], [data-copy]");
+  const button = event.target.closest("[data-detail], [data-copy], [data-collapse]");
   if (!button) return;
+
+  if (button.hasAttribute("data-collapse")) {
+    // le voci di un tentativo si possono chiudere: con dieci retry davanti,
+    // scorrere fino a quello che interessa è il lavoro più noioso della pagina
+    const open = button.getAttribute("aria-expanded") === "true";
+    button.setAttribute("aria-expanded", String(!open));
+    const section = button.closest("section");
+    section.querySelector("ol").hidden = open;
+    // nascondere la lista non toglie il margine dell'intestazione né il padding
+    // della sezione: senza questa classe, fra un tentativo chiuso e il prossimo
+    // resterebbe una fascia vuota
+    section.classList.toggle("collapsed", open);
+    return;
+  }
 
   if (button.hasAttribute("data-copy")) {
     if (await copyText(button.dataset.copy)) {
@@ -419,6 +452,7 @@ el("results").addEventListener("click", async (event) => {
 
   if (button.dataset.detail === "json") {
     const [title, payload] = state.payloads.get(button.dataset.uid) ?? ["", null];
+    state.detailJson = payload;
     openDetail("Dettaglio JSON", title, view.jsonBody(payload));
     return;
   }
@@ -459,6 +493,16 @@ async function showLogs(trackingId, moment, code) {
 function failure(error) {
   return `<p class="text-xs text-rose-600">${escape(`${error.name}: ${error.message}`)}</p>`;
 }
+
+/** Il modale non sta dentro #results: i suoi bottoni vogliono il loro gestore. */
+el("detail-modal-body").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-copy-json]");
+  if (!button) return;
+  const text = JSON.stringify(state.detailJson, null, 2);
+  button.innerHTML = await copyText(text)
+    ? `${view.icon("check")}copiato`
+    : `${view.icon("copy")}copia non riuscita`;
+});
 
 el("btn-detail-close").addEventListener("click", () => el("detail-modal").close());
 el("sel-profile").addEventListener("change", connect);

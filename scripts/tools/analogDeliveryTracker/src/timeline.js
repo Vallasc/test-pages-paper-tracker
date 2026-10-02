@@ -21,6 +21,11 @@ export function entry(kind, statusAt, arrivalAt, title, subtitle, badges, payloa
   };
 }
 
+/** Una voce di catalogo, o il ripiego: la chiave arriva dai dati, non da noi. */
+function catalogued(catalog, key, fallback) {
+  return Object.hasOwn(catalog, key) ? catalog[key] : fallback;
+}
+
 /** Quante volte compare ogni valore, nell'ordine in cui si presentano. */
 function counted(values) {
   const totals = new Map();
@@ -42,7 +47,10 @@ export function attachmentBadges(attachments) {
  * un'irreperibilità o una mancata consegna sono esiti legittimi, non guasti.
  */
 export function describeStatus(statusCode) {
-  const known = k.STATUS_CODES[statusCode];
+  // hasOwn e non `[...]`: un codice che si chiama come un membro di
+  // Object.prototype — "constructor", "toString" — restituirebbe una funzione,
+  // e il destrutturamento qui sotto farebbe cadere l'intera ricerca
+  const known = Object.hasOwn(k.STATUS_CODES, statusCode) ? k.STATUS_CODES[statusCode] : null;
   if (!known) {
     return { description: "descrizione non disponibile nel catalogo", badges: [], kind: "event-unknown" };
   }
@@ -93,8 +101,8 @@ export function entriesForTracking(tracking, errors, dryRuns, logOutputs, wantFl
     const details = error.details ?? {};
     const cause = details.cause;
     const message = details.message;
-    const bits = [k.ERROR_CATEGORIES[category] ?? "categoria non nel catalogo"];
-    if (cause) bits.push(`${cause}: ${k.ERROR_CAUSES[cause] ?? "causa non nel catalogo"}`);
+    const bits = [catalogued(k.ERROR_CATEGORIES, category, "categoria non nel catalogo")];
+    if (cause) bits.push(`${cause}: ${catalogued(k.ERROR_CAUSES, cause, "causa non nel catalogo")}`);
     if (message) bits.push(message);
     const moment = parseTs(error.created);
     const severity = (error.type ?? "ERROR").toUpperCase();

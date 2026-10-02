@@ -3,25 +3,57 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Questa pagina tiene in memoria credenziali AWS vive, quindi vale la pena
+     recintare dove può andare il codice. Va per prima: un meta CSP governa solo
+     quel che viene analizzato dopo di lui.
+
+     Niente 'unsafe-inline' sugli script: in pagina non ce n'è nessuno inline, e
+     l'inizializzazione di Mermaid sta in `tracker.js`. Sugli stili serve, invece,
+     perché Tailwind Browser genera <style> a runtime e Mermaid ne mette uno
+     dentro ogni SVG. `connect-src` è la riga che conta: anche con uno script
+     ostile sulla pagina, le credenziali non avrebbero dove andare. -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self' https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+  font-src https://cdn.jsdelivr.net;
+  img-src 'self' data:;
+  connect-src 'self' https://*.amazonaws.com;
+  object-src 'none'; base-uri 'none'; form-action 'none'">
+
 <title>Analog Delivery Tracker</title>
 
-<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<!-- Versioni esatte e `integrity` su tutto quel che arriva da fuori: senza, una
+     release storta o un CDN compromesso è codice arbitrario accanto alle
+     credenziali. Il browser scarta il file se l'hash non torna.
+
+     L'SDK AWS resta senza: `aws_dir`/`sdk.js` lo prendono da `+esm`, che jsDelivr
+     genera al volo e per cui sconsiglia SRI, e comunque un `import()` dinamico
+     non ha dove metterlo. Lì il recinto è la CSP. -->
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"
+        integrity="sha384-2ql948lIdLcGEE0/qxNiudyTjgauA3RDJERu5xW75kFCvSl5a9odyQYCb6tEjnmB"
+        crossorigin="anonymous"></script>
 
 <!-- Il look "neo" dei temi Mermaid 12 chiede "Recursive Variable", che Mermaid
      nomina ma non distribuisce: senza questo foglio il browser ripiega su Arial
      e il diagramma non somiglia a quello della documentazione. -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/recursive@5.3.0/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/recursive@5.3.0/index.css"
+      integrity="sha384-2GeM7iYse26g6JZIccxFULRQmNQ+02EwB4Aa8iLNlKri8n3C143TNMD8P/MS/0gK"
+      crossorigin="anonymous">
 
 <!-- Mermaid disegna i diagrammi di flusso dei prodotti, solo su richiesta.
      Serve la 12: da lì gli stateDiagram hanno layout elk e look neo. Nessun
      tema qui: vince il frontmatter del .mermaid, che sceglie "redux" al posto
      del "redux-color" di default, perché i riquadri colorati uno a uno tolgono
-     l'occhio al verde del cammino percorso. -->
-<script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@12.0.0/dist/mermaid.esm.min.mjs";
-  mermaid.initialize({ startOnLoad: false });
-  window.mermaid = mermaid;
-</script>
+     l'occhio al verde del cammino percorso.
+
+     Build UMD e non ESM apposta: `integrity` vale su un <script src>, mentre un
+     `import` dentro un modulo non ha modo di portarselo. Definisce
+     `window.mermaid`, e `tracker.js` lo configura appena parte. -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@12.0.0/dist/mermaid.min.js"
+        integrity="sha384-xzghz1GQ5u9HCpVskeDPqMsdogD1yvuMQbEK53+wi+G70+6J1AG0L2cfi9PHjDWI"
+        crossorigin="anonymous"></script>
 
 <style type="text/tailwindcss">
   @theme {
@@ -48,10 +80,49 @@
   .tl { border-left: 2px solid #e2e8f0; }
   .tl-dot { left: -1.875rem; }
 
-  /* Il modale è uno solo; col diagramma dentro va allargato, perché una macchina
-     a stati è larga quanto tutti i suoi rami. Regola su #id: deve avere la
-     meglio sulle utility di Tailwind scritte sull'elemento. */
-  #detail-modal.wide { width: min(96rem, 96vw); max-height: 94vh; }
+  /* Il modale è uno solo; col diagramma dentro gli si alza il tetto, perché una
+     macchina a stati è larga quanto tutti i suoi rami. Regola su #id: deve avere
+     la meglio sulle utility di Tailwind scritte sull'elemento.
+
+     Sono tetti, non misure: un <dialog> nasce `fit-content`, quindi con
+     min-width e max-width si stringe su quel che contiene invece di restare
+     sempre spalancato su una riga di log o su un JSON di tre campi. */
+  #detail-modal.wide { max-width: min(110rem, 98vw); max-height: 96vh; }
+
+  /* Un tentativo chiuso non deve lasciare una fascia vuota: via il padding
+     della sezione e il margine sotto la sua intestazione. Il selettore porta il
+     nome dell'elemento apposta, per battere in specificità le utility di
+     Tailwind scritte sull'elemento (`pb-5`, `mb-4`) senza !important. */
+  section.collapsed { padding-bottom: 0; }
+  section.collapsed > div { margin-bottom: 0; }
+
+  /* La freccia del collasso: giù quando il tentativo è aperto, a destra quando
+     è chiuso. Lo stato vero è aria-expanded, così lo stile segue l'accessibilità
+     invece di raddoppiarla con una classe. */
+  [data-collapse] svg { transition: transform .15s ease; }
+  [data-collapse][aria-expanded="false"] svg { transform: rotate(-90deg); }
+
+  /* Il diagramma si adatta all'altezza del modale invece di uscirne.
+
+     Mermaid, con `useMaxWidth`, mette sull'SVG `width="100%"` e un
+     `style="max-width: Npx"` inline, e nessuna altezza: la larghezza la decide
+     il contenitore e l'altezza esce dalle proporzioni del viewBox, quindi una
+     macchina a stati alta sfora comunque.
+
+     Qui l'altezza è fissa e la larghezza è `auto`: un elemento rimpiazzato con
+     proporzioni note, data un'altezza, si calcola la larghezza da sé. Il
+     diagramma riempie l'altezza disponibile e il modale — che è `fit-content` —
+     si stringe sulla larghezza che ne esce. Il `max-width` inline di Mermaid va
+     tolto, perché è la larghezza *naturale* del disegno e fermerebbe la scala
+     prima del tempo; quello al 100% resta, per i diagrammi molto larghi dove a
+     comandare torna a essere la larghezza del modale. */
+  .diagram-fit svg {
+    display: block;
+    margin-inline: auto;
+    height: 78vh;                 /* l'altezza la prende tutta… */
+    width: auto;                  /* …e la larghezza la dettano le proporzioni */
+    max-width: 100% !important;   /* via il max-width inline di Mermaid */
+  }
 
   /* Albero JSON: il marcatore di default di <details> è minuscolo e disallineato. */
   .jsn summary { list-style: none; }
@@ -183,16 +254,23 @@
 <!-- m-auto: la Preflight di Tailwind azzera i margini, e un dialog modale si
      centra proprio col margin:auto che gli dà il browser. -->
 <dialog id="detail-modal"
-        class="m-auto max-h-[85vh] w-[min(64rem,92vw)] overflow-hidden rounded-xl
+        class="m-auto max-h-[92vh] min-w-[min(32rem,92vw)] max-w-[min(80rem,96vw)]
+               overflow-hidden rounded-xl
                border border-slate-200 p-0 shadow-xl backdrop:bg-slate-900/40">
   <header class="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-3">
     <div class="min-w-0">
       <h2 id="detail-modal-title" class="text-sm font-semibold text-slate-900"></h2>
       <p id="detail-modal-sub" class="mt-0.5 break-all font-mono text-xs text-slate-500"></p>
     </div>
-    <button id="btn-detail-close" type="button"
-            class="shrink-0 cursor-pointer rounded px-2 py-1 text-sm text-slate-500 hover:bg-slate-100">
-      Chiudi
+    <!-- Stesso tratto delle icone di view.js: 24x24, currentColor, 1.8.
+         L'etichetta resta per chi naviga con lo screen reader. -->
+    <button id="btn-detail-close" type="button" title="Chiudi" aria-label="Chiudi"
+            class="shrink-0 cursor-pointer rounded p-1.5 text-slate-400
+                   hover:bg-slate-100 hover:text-slate-700">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
+        <path d="M6 6l12 12M18 6L6 18"/>
+      </svg>
     </button>
   </header>
   <div id="detail-modal-body" class="px-5 py-4"></div>

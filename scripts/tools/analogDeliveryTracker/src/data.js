@@ -149,8 +149,10 @@ export async function findByIun(ddb, schemes, iun, maxRec, maxAtt, say) {
 
 /** Errori e output dry-run dei tracking dati. */
 export async function collect(ddb, trackings, wantDryRun, say) {
-  const errors = {};
-  const dryRuns = {};
+  // senza prototipo: la chiave è un trackingId, e `obj["__proto__"] = x`
+  // cambierebbe il prototipo dell'oggetto invece di aggiungerci una voce
+  const errors = Object.create(null);
+  const dryRuns = Object.create(null);
   for (const tracking of trackings) {
     const trackingId = tracking.trackingId;
     say(`Errori di ${trackingId}`);
@@ -395,7 +397,7 @@ function decodeLeadingJson(text) {
  * di richiedere le stesse a CloudWatch.
  */
 export async function collectLogOutputs(logs, cache, trackings, minutes, say) {
-  const outputs = {};
+  const outputs = Object.create(null);
   for (const tracking of trackings) {
     const trackingId = tracking.trackingId;
     const moments = [parseTs(tracking.createdAt),

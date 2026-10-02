@@ -50,11 +50,24 @@ export function jsonNode(value, label = "") {
     "</details>";
 }
 
-/** L'albero JSON come corpo del modale. */
+/**
+ * L'albero JSON come corpo del modale, col bottone per copiarlo.
+ *
+ * Il bottone non si porta dentro il payload: lo ripesca `tracker`, che lo ha
+ * già in mano. Un JSON intero dentro un attributo sarebbe un attributo enorme.
+ */
 export function jsonBody(payload) {
-  return '<div class="jsn max-h-[70vh] overflow-auto rounded-md border border-slate-200 ' +
+  // il bottone sta sopra l'albero, non in una riga sua: così non ruba altezza, e
+  // in posizione assoluta resta in alto a destra mentre il JSON scorre sotto
+  return '<div class="relative">' +
+    '<button type="button" data-copy-json ' +
+    'class="absolute right-2 top-2 z-10 inline-flex cursor-pointer items-center gap-1 ' +
+    'rounded border border-slate-300/70 bg-white/70 px-2 py-1 text-[11px] font-medium ' +
+    'text-slate-600 backdrop-blur-sm hover:border-slate-400 hover:bg-white ' +
+    `hover:text-slate-900">${icon("copy")}Copia JSON</button>` +
+    '<div class="jsn max-h-[77vh] overflow-auto rounded-md border border-slate-200 ' +
     'bg-slate-50 p-3 font-mono text-[13px] leading-relaxed text-slate-800">' +
-    `${jsonNode(payload)}</div>`;
+    `${jsonNode(payload)}</div></div>`;
 }
 
 // =============================================================================
@@ -90,9 +103,10 @@ export function renderLogs(events, minutes) {
     const { moment, body } = parseLogLine(item);
     const level = (body.level ?? "").toUpperCase();
     const logger = (body.logger_name ?? "").split(".").at(-1);
+    const tone = Object.hasOwn(LEVEL_STYLE, level) ? LEVEL_STYLE[level] : "text-slate-600";
     return '<div class="border-b border-slate-100 py-1 last:border-0">' +
       `<span class="text-slate-400">${escape(fmtTs(moment))}</span> ` +
-      `<span class="font-medium ${LEVEL_STYLE[level] ?? "text-slate-600"}">` +
+      `<span class="font-medium ${tone}">` +
       `${escape(level)}</span> <span class="text-sky-800">${escape(logger)}</span>` +
       // whitespace-pre-wrap: qui dentro ogni spazio in più si vedrebbe
       '<div class="whitespace-pre-wrap break-all text-slate-800">' +
@@ -101,7 +115,7 @@ export function renderLogs(events, minutes) {
 
   const capped = events.length >= k.LOG_MAX_EVENTS ? " (tetto raggiunto)" : "";
   return `<p class="mt-1 text-xs text-slate-500">${events.length} righe in ±${minutes} min${capped}</p>` +
-    '<div class="mt-1 max-h-[70vh] overflow-auto rounded-md border border-slate-200 ' +
+    '<div class="mt-1 max-h-[77vh] overflow-auto rounded-md border border-slate-200 ' +
     `bg-slate-50 p-3 font-mono text-[12px] leading-relaxed">${rows.join("")}</div>`;
 }
 
@@ -138,7 +152,8 @@ const STATE_STYLE = {
 };
 
 function stateBadge(label, value) {
-  return badge(`${label} ${value}`, STATE_STYLE[value] ?? "bg-slate-200 text-slate-700");
+  const style = Object.hasOwn(STATE_STYLE, value) ? STATE_STYLE[value] : null;
+  return badge(`${label} ${value}`, style ?? "bg-slate-200 text-slate-700");
 }
 
 export function badge(text, classes = "bg-slate-100 text-slate-600") {
@@ -157,6 +172,7 @@ const ICONS = {
         "M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1",
   diagram: "M4 4h6v5H4zM14 15h6v5h-6zM7 9v4a2 2 0 0 0 2 2h5",
   check: "M4 12.5l5 5L20 6.5",
+  chevron: "M6 9l6 6 6-6",
 };
 
 export function icon(name) {
@@ -178,7 +194,7 @@ export function action(kind, label, attributes = "") {
 export function consoleLink(href, kind, label) {
   return '<span class="inline-flex items-center overflow-hidden rounded border ' +
     'border-slate-300 bg-white">' +
-    `<a href="${escape(href)}" target="_blank" rel="noopener" ` +
+    `<a href="${escape(href)}" target="_blank" rel="noopener noreferrer" ` +
     'class="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium ' +
     `text-slate-600 hover:bg-slate-50 hover:text-slate-900">${icon(kind)}` +
     `${escape(label)}</a>` +
@@ -197,7 +213,8 @@ function logAction(item, moment) {
 }
 
 export function renderEntry(item, payloads) {
-  const [dot, card] = KIND_STYLE[item.kind] ?? KIND_STYLE.milestone;
+  const [dot, card] = Object.hasOwn(KIND_STYLE, item.kind)
+    ? KIND_STYLE[item.kind] : KIND_STYLE.milestone;
   // in testata l'arrivo sul tracker: è l'asse di ordinamento di default, ed è
   // anche l'istante attorno a cui ha senso cercare i log. Lo statusTimestamp,
   // che è la data dichiarata nell'evento, va nel piede.
@@ -303,10 +320,19 @@ function renderTracking(tracking, entries, tables, spans, region, payloads) {
       <div class="sticky top-[var(--page-header)] z-10 -mx-5 mb-4 flex flex-wrap
                   items-start justify-between gap-2 border-b border-slate-100
                   bg-white px-5 py-3">
-        <div class="min-w-0">
-          <h3 class="font-mono text-sm font-semibold text-slate-900">${escape(title)}</h3>
-          <p class="mt-0.5 break-all font-mono text-[11px] text-slate-400">
-            ${escape(trackingId)}</p>
+        <div class="flex min-w-0 items-start gap-2">
+          <button type="button" data-collapse aria-expanded="true"
+                  title="Mostra o nascondi le voci di questo tentativo"
+                  class="mt-0.5 shrink-0 cursor-pointer rounded p-0.5 text-slate-400
+                         hover:bg-slate-100 hover:text-slate-700">${icon("chevron")}</button>
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="font-mono text-sm font-semibold text-slate-900">${escape(title)}</h3>
+              ${badge(`${entries.length} voci`)}
+            </div>
+            <p class="mt-0.5 break-all font-mono text-[11px] text-slate-400">
+              ${escape(trackingId)}</p>
+          </div>
         </div>
         <span class="flex flex-wrap items-center gap-1.5">
           ${diagram.action(tracking, action)}${trackingLinks(trackingId, tables, spans, region)}

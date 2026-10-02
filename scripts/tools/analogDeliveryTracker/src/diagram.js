@@ -57,7 +57,8 @@ const STYLE = {
 };
 
 export function available(product) {
-  return product in k.DIAGRAMS;
+  // `in` guarda anche il prototipo: `available("toString")` sarebbe vero
+  return Object.hasOwn(k.DIAGRAMS, product);
 }
 
 /** I codici evento del tracking, una volta sola e nell'ordine d'arrivo. */

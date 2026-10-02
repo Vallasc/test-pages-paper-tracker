@@ -143,6 +143,43 @@ comune — `ResourceNotFoundException` e `ThrottlingException` fra gli altri —
 sono classi diverse nei due servizi: fonderli farebbe vincere l'ultimo caricato,
 e un `instanceof` guarderebbe la classe sbagliata senza dirlo a nessuno.
 
+## Sicurezza
+
+La pagina tiene in memoria credenziali AWS vive, con i permessi del profilo
+scelto: tutto quello che segue esiste per quello.
+
+- **CSP** in un `<meta>`, prima di ogni altra cosa. Niente `'unsafe-inline'`
+  sugli script — in pagina non ce ne sono — e `connect-src` limitato a `'self'`
+  e `*.amazonaws.com`: anche con uno script ostile accanto alle credenziali, non
+  avrebbe dove spedirle.
+- **SRI** su Tailwind, Mermaid e il font, tutti a versione esatta. Mermaid
+  arriva come UMD apposta: `integrity` vale su un `<script src>`, mentre un
+  `import` dentro un modulo non ha dove portarselo.
+- **La `region` dall'URL è validata** con `/^[a-z0-9-]+$/`. Senza, un
+  `?region=attacker.com/` fa puntare i link della console a
+  `https://attacker.com/.console.aws.amazon.com/…`: non è XSS — lo schema è
+  fisso — ma è una finta console a un clic, raggiunta da un link che sembra una
+  normale condivisione. L'SDK si difende da sé e rifiuta le region che non sono
+  hostname validi; quei link no. I link portano anche `noreferrer`, così IUN e
+  account non viaggiano nel `Referer`.
+- **I cataloghi si leggono con `Object.hasOwn`.** Un `statusCode` che si chiama
+  come un membro di `Object.prototype` — `constructor`, `toString` — prima
+  restituiva una funzione e faceva cadere l'intera ricerca.
+- **Nessun segreto a riposo**: su disco finiscono l'handle della cartella e il
+  nome del profilo, mai le chiavi.
+
+Due rischi restano, e sono scelte più che bug:
+
+**L'SDK AWS non ha SRI.** Arriva da `+esm`, che jsDelivr genera al volo e per
+cui sconsiglia SRI, e un `import()` dinamico non avrebbe dove metterlo. Il
+recinto lì è la CSP. Per toglierlo del tutto va vendorizzato nel repo.
+
+**Su GitHub Pages l'origine è condivisa.** `https://<utente>.github.io` è la
+stessa per *ogni* repo di quell'account pubblicato su Pages, e il permesso sulla
+cartella `~/.aws` — come IndexedDB e localStorage — vive sull'origine. Un altro
+progetto sulla stessa origine potrebbe riprendersi l'handle salvato e rileggere
+la cartella. Si risolve con un dominio dedicato, non con il codice.
+
 ## Dove può inciampare
 
 Il selettore di cartelle non si apre nei sotto-frame di origine diversa dal top:
